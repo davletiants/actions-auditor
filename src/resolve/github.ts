@@ -33,7 +33,10 @@ export interface GitApi {
 const MAX_PAGES = 10 // 1000 tags / branches is plenty; bounded to protect the rate limit
 
 export class OctokitGitApi implements GitApi {
-  constructor(private readonly octokit: Octokit) {}
+  private readonly octokit: Octokit
+  constructor(octokit: Octokit) {
+    this.octokit = octokit
+  }
 
   async getRepo(owner: string, repo: string): Promise<RepoInfo | null> {
     return orNull(async () => {
@@ -50,9 +53,7 @@ export class OctokitGitApi implements GitApi {
   async getRef(owner: string, repo: string, ref: string) {
     return orNull(async () => {
       const { data } = await this.octokit.rest.git.getRef({ owner, repo, ref })
-      // Older API behaviour returned an array of prefix matches; insist on an exact match.
-      const exact = (Array.isArray(data) ? data : [data]).find((r) => r.ref === `refs/${ref}`)
-      return exact ? { sha: exact.object.sha, type: exact.object.type } : null
+      return { sha: data.object.sha, type: data.object.type }
     })
   }
 

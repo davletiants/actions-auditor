@@ -37920,35 +37920,6 @@ exports.visitAsync = visitAsync;
 /******/ /* webpack/runtime/asset-relocator-loader */
 /******/ if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = decodeURIComponent(new URL('.', import.meta.url).pathname).slice(import.meta.url.match(/^file:\/\/\/\w:/) ? 1 : 0, -1) + "/";
 /******/ 
-/******/ /* webpack/runtime/compat get default export */
-/******/ (() => {
-/******/ 	// getDefaultExport function for compatibility with non-harmony modules
-/******/ 	__nccwpck_require__.n = (module) => {
-/******/ 		var getter = module && module.__esModule ?
-/******/ 			() => (module['default']) :
-/******/ 			() => (module);
-/******/ 		__nccwpck_require__.d(getter, { a: getter });
-/******/ 		return getter;
-/******/ 	};
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/define property getters */
-/******/ (() => {
-/******/ 	// define getter functions for harmony exports
-/******/ 	__nccwpck_require__.d = (exports, definition) => {
-/******/ 		for(var key in definition) {
-/******/ 			if(__nccwpck_require__.o(definition, key) && !__nccwpck_require__.o(exports, key)) {
-/******/ 				Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
-/******/ 			}
-/******/ 		}
-/******/ 	};
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/hasOwnProperty shorthand */
-/******/ (() => {
-/******/ 	__nccwpck_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
-/******/ })();
-/******/ 
 /************************************************************************/
 var __webpack_exports__ = {};
 
@@ -45895,11 +45866,6 @@ function getOctokit(token, options, ...additionalPlugins) {
     return new GitHubWithPlugins(getOctokitOptions(token, options));
 }
 //# sourceMappingURL=github.js.map
-;// CONCATENATED MODULE: external "node:fs/promises"
-const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-var external_node_path_default = /*#__PURE__*/__nccwpck_require__.n(external_node_path_namespaceObject);
 ;// CONCATENATED MODULE: ./data/compromised.json
 const compromised_namespaceObject = /*#__PURE__*/JSON.parse('[{"action":"tj-actions/changed-files","sha":"0e58ed8671d6b60d0890c21b07f8835ace038e67","advisory":"https://github.com/advisories/GHSA-mrrh-fwg8-r2c3","note":"CVE-2025-30066: tags repointed to a commit that dumped runner secrets to logs (March 2025)"},{"action":"reviewdog/action-setup","sha":"f0d342d24037bb11d26b9bd8496e0808ba32e9ec","advisory":"https://nvd.nist.gov/vuln/detail/CVE-2025-30154","note":"CVE-2025-30154: v1 tag repointed to a commit that dumped runner secrets to logs (March 2025)"}]');
 // EXTERNAL MODULE: ./node_modules/yaml/dist/index.js
@@ -45907,27 +45873,24 @@ var dist = __nccwpck_require__(8815);
 ;// CONCATENATED MODULE: ./src/config.ts
 
 const DEFAULT_SEVERITY = {
-    'unpinned-ref': 'error',
-    'branch-ref': 'error',
-    'ambiguous-ref': 'error',
-    'short-sha': 'error',
-    'unresolvable-ref': 'error',
-    'unknown-commit': 'error',
-    'imposter-commit': 'error',
-    'comment-drift': 'warning',
-    'unpinned-docker': 'error',
-    'fork-target': 'warning',
-    'renamed-repo': 'warning',
-    'archived-repo': 'warning',
-    denied: 'error',
-    compromised: 'error',
-    'invalid-uses': 'error',
+    'unpinned-ref': 'error', // @v4 / @v4.1.0 tag reference
+    'branch-ref': 'error', // @main / @master branch reference
+    'ambiguous-ref': 'error', // ref name exists as both a tag and a branch
+    'short-sha': 'error', // @a1b2c3d abbreviated SHA
+    'unresolvable-ref': 'error', // repo or ref does not exist / is not accessible
+    'unknown-commit': 'error', // pinned SHA does not exist in the repo
+    'imposter-commit': 'error', // pinned SHA exists only in the fork network, not upstream
+    'comment-drift': 'warning', // `@sha # v1.2.3` comment does not match what v1.2.3 resolves to
+    'unpinned-docker': 'error', // docker://image without @sha256 digest
+    'fork-target': 'warning', // referenced repo is itself a fork
+    'renamed-repo': 'warning', // referenced repo was renamed / transferred (repo-jacking risk)
+    'archived-repo': 'warning', // referenced repo is archived, no security fixes will land
+    denied: 'error', // matches user deny-list
+    compromised: 'error', // matches built-in list of known-malicious commits
+    'invalid-uses': 'error', // syntactically unusable `uses:` value
 };
-function defaultConfig() {
-    return { allow: [], deny: [], severity: { ...DEFAULT_SEVERITY } };
-}
 function parseConfig(text) {
-    const config = defaultConfig();
+    const config = { allow: [], deny: [], severity: { ...DEFAULT_SEVERITY } };
     if (!text)
         return config;
     const raw = ((0,dist/* parse */.qg)(text) ?? {});
@@ -45978,9 +45941,7 @@ function parseActionRef(raw) {
     if (value.startsWith('./') || value.startsWith('../'))
         return { kind: 'local', raw: value };
     if (value.startsWith('docker://')) {
-        const image = value.slice('docker://'.length);
-        const digest = image.match(DOCKER_DIGEST)?.[0].slice(1);
-        return { kind: 'docker', raw: value, image, digest };
+        return { kind: 'docker', raw: value, digest: value.match(DOCKER_DIGEST)?.[0].slice(1) };
     }
     if (value.includes('${{')) {
         return { kind: 'invalid', raw: value, reason: 'expressions are not allowed in `uses:`' };
@@ -46027,23 +45988,14 @@ function rewriteLine(site, newValue, commentTag) {
     const tail = commentTag && !/\s#/.test(after) ? `${after} # ${commentTag}` : after;
     return `${before}${scalar}${tail}`;
 }
-/** Applies line rewrites to a whole file's text. Lines are 1-based. */
-function applyLineFixes(text, fixes) {
-    if (!fixes.size)
-        return text;
-    const eol = text.includes('\r\n') ? '\r\n' : '\n';
-    const lines = text.split(/\r?\n/);
-    for (const [line, newLine] of fixes)
-        lines[line - 1] = newLine;
-    return lines.join(eol);
-}
 
 ;// CONCATENATED MODULE: ./src/checks/audit.ts
 
 
 
 
-const BUILTIN_COMPROMISED = compromised_namespaceObject;
+// Typed so a malformed entry (e.g. a misspelt `sha`) fails the typecheck instead of silently never matching.
+const compromised = compromised_namespaceObject;
 async function auditSites(sites, ctx) {
     // Sequential on purpose: lookups are memoized, and bursts of parallel calls trip secondary rate limits.
     const findings = [];
@@ -46083,7 +46035,6 @@ async function auditRepoRef(site, ref, ctx, add) {
     const { resolver, config } = ctx;
     const name = actionName(ref);
     const repoName = `${ref.owner}/${ref.repo}`;
-    const compromised = ctx.compromised ?? BUILTIN_COMPROMISED;
     const checkCompromised = (sha, via) => {
         const hit = compromised.find((c) => c.action.toLowerCase() === repoName.toLowerCase() && c.sha === sha);
         if (hit) {
@@ -46268,9 +46219,7 @@ class OctokitGitApi {
     async getRef(owner, repo, ref) {
         return orNull(async () => {
             const { data } = await this.octokit.rest.git.getRef({ owner, repo, ref });
-            // Older API behaviour returned an array of prefix matches; insist on an exact match.
-            const exact = (Array.isArray(data) ? data : [data]).find((r) => r.ref === `refs/${ref}`);
-            return exact ? { sha: exact.object.sha, type: exact.object.type } : null;
+            return { sha: data.object.sha, type: data.object.type };
         });
     }
     async getTagObject(owner, repo, sha) {
@@ -46343,8 +46292,8 @@ const MAX_TAG_DEREF = 5;
 const MAX_BRANCH_COMPARES = 20;
 /** Caching layer over GitApi. One instance per run; every lookup is memoized as a promise. */
 class Resolver {
-    api;
     cache = new Map();
+    api;
     constructor(api) {
         this.api = api;
     }
@@ -46445,7 +46394,7 @@ class Resolver {
 ;// CONCATENATED MODULE: ./src/report/format.ts
 /**
  * A `git apply --unidiff-zero` compatible patch containing every available fix.
- * Used where we can't post suggestions (fork PRs) and by the CLI's dry run.
+ * Used where we can't post suggestions (fork PRs) and for full scans.
  */
 function buildPatch(findings) {
     const byFile = new Map();
@@ -46471,15 +46420,6 @@ function countBySeverity(findings) {
         errors: findings.filter((f) => f.severity === 'error').length,
         warnings: findings.filter((f) => f.severity === 'warning').length,
     };
-}
-/** Plain-text rendering for the CLI. */
-function formatText(findings) {
-    return findings
-        .map((f) => {
-        const head = `${f.file}:${f.line}  ${f.severity.toUpperCase()}  [${f.rule}]  ${stripTicks(f.message)}`;
-        return f.fix ? `${head}\n    fix: ${f.fix.newLine.trim()}` : head;
-    })
-        .join('\n');
 }
 function stripTicks(s) {
     return s.replace(/`/g, '');
@@ -46540,11 +46480,7 @@ async function writeSummary(findings, opts) {
  * skipped, so re-runs don't spam.
  */
 async function postReview(octokit, target, findings) {
-    const byLine = new Map();
-    for (const f of findings) {
-        const key = `${f.file}:${f.line}`;
-        byLine.set(key, [...(byLine.get(key) ?? []), f]);
-    }
+    const byLine = Map.groupBy(findings, (f) => `${f.file}:${f.line}`);
     const existing = new Set();
     const prior = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
         owner: target.owner,
@@ -46624,15 +46560,11 @@ function addedLines(patch) {
     return added;
 }
 /**
- * Whether `line` is among a file's added lines. `lines` is `undefined` for files the PR doesn't touch,
- * and `null` when GitHub omitted the patch (large diffs): then we can't know, and `ifUnknown` decides.
+ * Whether an inline review comment can be placed on `file:line`. `touched` maps each PR file to its added
+ * lines, or `null` when GitHub omitted the patch (large diffs): then we can't know, so no.
  */
-function lineTouched(lines, line, ifUnknown) {
-    return lines === null ? ifUnknown : (lines?.has(line) ?? false);
-}
-/** Whether an inline review comment can be placed on `file:line`. Never in a file whose patch was omitted. */
 function isCommentable(touched, file, line) {
-    return lineTouched(touched.get(file), line, false);
+    return touched.get(file)?.has(line) ?? false;
 }
 /**
  * The sites a PR may have changed: those on an added line or reached through one (`alsoAt`, e.g. a new
@@ -46643,35 +46575,14 @@ function isCommentable(touched, file, line) {
 function changedSites(found, lines, baseSites) {
     const ran = new Set(baseSites.flatMap((s) => s.jobs.map((job) => `${job}\0${s.value}`)));
     return found.filter((s) => s.jobs.some((job) => !ran.has(`${job}\0${s.value}`)) ||
-        [s.line, ...(s.alsoAt ?? [])].some((l) => lineTouched(lines, l, true)));
+        [s.line, ...(s.alsoAt ?? [])].some((l) => lines === null || !!lines?.has(l)));
 }
 
 ;// CONCATENATED MODULE: ./src/scan/files.ts
-
-
-const SKIP_DIRS = new Set(['.git', 'node_modules']);
 /** Workflow files and action metadata files: the only places `uses:` is executed. */
 function isAuditedPath(file) {
     const p = file.replace(/\\/g, '/');
     return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p) || /(^|\/)action\.ya?ml$/.test(p);
-}
-/** Repo-relative (forward-slash) paths of every audited file under `root`. */
-async function findAuditedFiles(root) {
-    const out = [];
-    const walk = async (dir) => {
-        for (const entry of await (0,promises_namespaceObject.readdir)(dir, { withFileTypes: true })) {
-            if (entry.isDirectory()) {
-                if (!SKIP_DIRS.has(entry.name))
-                    await walk(external_node_path_default().join(dir, entry.name));
-                continue;
-            }
-            const rel = external_node_path_default().relative(root, external_node_path_default().join(dir, entry.name)).replace(/\\/g, '/');
-            if (entry.isFile() && isAuditedPath(rel))
-                out.push(rel);
-        }
-    };
-    await walk(root);
-    return out.sort();
 }
 
 ;// CONCATENATED MODULE: ./src/scan/parse.ts
@@ -46680,7 +46591,7 @@ async function findAuditedFiles(root) {
  * Finds every `uses:` that GitHub would actually execute:
  *   workflows: jobs.<id>.uses (reusable workflow) and jobs.<id>.steps[*].uses
  *   action.yml: runs.steps[*].uses (composite actions)
- * YAML anchors/aliases and merge keys are followed, so `uses: *ref` or `- *step` can't
+ * YAML anchors and aliases are followed (GitHub rejects `<<:` merge keys), so `uses: *ref` or `- *step` can't
  * slip past. Positions are kept so findings can be annotated and fixed in place without
  * re-serializing (and reformatting) the user's YAML.
  */
@@ -46727,7 +46638,6 @@ function findUses(file, text) {
         sites.set(valueStart, {
             file,
             line: pos.line,
-            column: pos.col,
             value: node.value.trim(),
             valueStart,
             valueEnd,
@@ -46740,25 +46650,12 @@ function findUses(file, text) {
             jobs: [job],
         });
     };
-    /**
-     * A map's `[key, value, via]` entries, following aliases and expanding `<<:` merge keys
-     * (the map's own keys win, then earlier merge sources). Values are raw nodes.
-     */
-    const entries = (mapNode, via, depth = 0) => {
+    /** A map's `[key, value, via]` entries, following an aliased map. Values are raw nodes. */
+    const entries = (mapNode, via) => {
         const [map, mapVia] = deref(mapNode, via);
-        if (!(0,dist/* isMap */.jh)(map) || depth > 10)
-            return [];
-        const own = map.items
-            .filter((p) => keyName(p.key) !== '<<')
-            .map((p) => [keyName(p.key), p.value, mapVia]);
-        const merged = map.items
-            .filter((p) => keyName(p.key) === '<<')
-            .flatMap((merge) => ((0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]))
-            .flatMap((source) => entries(source, mapVia, depth + 1));
-        const seen = new Set();
-        return [...own, ...merged].filter(([key]) => !seen.has(key) && seen.add(key));
+        return (0,dist/* isMap */.jh)(map) ? map.items.map((p) => [keyName(p.key), p.value, mapVia]) : [];
     };
-    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+    /** Looks up `key` in a map, following aliases. Returns the raw value node. */
     const lookup = (mapNode, key, via) => {
         const hit = entries(mapNode, via).find(([k]) => k === key);
         return hit && [hit[1], hit[2]];
@@ -46806,27 +46703,24 @@ function findUses(file, text) {
 
 
 
-
-
 async function run() {
     const token = getInput('github-token', { required: true });
-    let mode = oneOf(getInput('mode') || 'changed', ['changed', 'all'], 'mode');
     const failOn = oneOf(getInput('fail-on') || 'error', ['error', 'warning', 'never'], 'fail-on');
     const suggest = (getInput('suggest') || 'true').toLowerCase() === 'true';
     const configPath = getInput('config-path') || '.github/actions-auditor.yml';
+    if (github_context.eventName === 'merge_group') {
+        info('merge_group: every pull request in the queue was already checked on its own.');
+        return;
+    }
     const octokit = getOctokit(token);
     const { owner, repo } = github_context.repo;
     const pr = github_context.payload.pull_request;
-    if (mode === 'changed' && !pr) {
-        info('Not a pull_request event; scanning all files instead of only changed lines.');
-        mode = 'all';
-    }
-    // On PRs, read config from the *base* commit so a PR cannot loosen the rules it is judged by,
-    // and read workflow files straight from the API at the PR head: no checkout of untrusted code needed.
-    const configText = pr
-        ? await fetchFile(octokit, owner, repo, configPath, pr.base.sha)
-        : await (0,promises_namespaceObject.readFile)(external_node_path_default().join(workspace(), configPath), 'utf8').catch(() => null);
-    const config = parseConfig(configText);
+    // PRs check only what they change; other events (schedule, push, workflow_dispatch) check every file.
+    const mode = pr ? 'changed' : 'all';
+    const head = pr?.head.sha ?? github_context.sha;
+    // Everything is read through the API, so no checkout (of untrusted PR code) is needed. On PRs the config
+    // comes from the *base* commit so a PR cannot loosen the rules it is judged by.
+    const config = parseConfig(await fetchFile(octokit, owner, repo, configPath, pr?.base.sha ?? head));
     const sites = [];
     /** Lines touched by the PR, per file. `null` = whole file (patch too large to be returned). */
     const touched = new Map();
@@ -46848,25 +46742,18 @@ async function run() {
         }
     }
     const sources = [];
-    if (pr) {
-        const paths = mode === 'changed' ? [...touched.keys()] : await listAuditedAt(octokit, owner, repo, pr.head.sha);
-        for (const file of paths)
-            sources.push({ file, text: await fetchFile(octokit, owner, repo, file, pr.head.sha) });
-    }
-    else {
-        for (const file of await findAuditedFiles(workspace())) {
-            sources.push({ file, text: await (0,promises_namespaceObject.readFile)(external_node_path_default().join(workspace(), file), 'utf8') });
-        }
+    for (const file of pr ? touched.keys() : await listAuditedAt(octokit, owner, repo, head)) {
+        sources.push({ file, text: await fetchFile(octokit, owner, repo, file, head) });
     }
     // The commit the PR is diffed against, so commits that landed on the base branch since aren't blamed on it.
-    const baseSha = pr && mode === 'changed' && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null;
+    const baseSha = pr && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null;
     for (const { file, text } of sources) {
         if (text === null)
             continue;
         const { sites: found, errors } = findUses(file, text);
         for (const e of errors)
             warning(`YAML parse problem: ${e}`, { file });
-        if (pr && mode === 'changed') {
+        if (pr) {
             // What the file already ran before this PR, so an edit that re-points an alias is still checked.
             const basePath = basePaths.get(file);
             const baseText = basePath && baseSha ? await fetchFile(octokit, owner, repo, basePath, baseSha) : null;
@@ -46946,9 +46833,6 @@ async function listAuditedAt(octokit, owner, repo, sha) {
     if (data.truncated)
         warning('Repository tree is too large to list fully; some files may not be scanned.');
     return data.tree.filter((e) => e.type === 'blob' && e.path && isAuditedPath(e.path)).map((e) => e.path);
-}
-function workspace() {
-    return process.env.GITHUB_WORKSPACE || process.cwd();
 }
 function oneOf(value, allowed, name) {
     if (!allowed.includes(value))

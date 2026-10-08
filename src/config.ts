@@ -1,5 +1,5 @@
 import { parse } from 'yaml'
-import type { RuleId, Severity } from './types.js'
+import type { Severity } from './types.ts'
 
 export type RuleLevel = Severity | 'off'
 
@@ -11,30 +11,28 @@ export interface Config {
   severity: Record<RuleId, RuleLevel>
 }
 
-export const DEFAULT_SEVERITY: Record<RuleId, RuleLevel> = {
-  'unpinned-ref': 'error',
-  'branch-ref': 'error',
-  'ambiguous-ref': 'error',
-  'short-sha': 'error',
-  'unresolvable-ref': 'error',
-  'unknown-commit': 'error',
-  'imposter-commit': 'error',
-  'comment-drift': 'warning',
-  'unpinned-docker': 'error',
-  'fork-target': 'warning',
-  'renamed-repo': 'warning',
-  'archived-repo': 'warning',
-  denied: 'error',
-  compromised: 'error',
-  'invalid-uses': 'error',
-}
+export const DEFAULT_SEVERITY = {
+  'unpinned-ref': 'error', // @v4 / @v4.1.0 tag reference
+  'branch-ref': 'error', // @main / @master branch reference
+  'ambiguous-ref': 'error', // ref name exists as both a tag and a branch
+  'short-sha': 'error', // @a1b2c3d abbreviated SHA
+  'unresolvable-ref': 'error', // repo or ref does not exist / is not accessible
+  'unknown-commit': 'error', // pinned SHA does not exist in the repo
+  'imposter-commit': 'error', // pinned SHA exists only in the fork network, not upstream
+  'comment-drift': 'warning', // `@sha # v1.2.3` comment does not match what v1.2.3 resolves to
+  'unpinned-docker': 'error', // docker://image without @sha256 digest
+  'fork-target': 'warning', // referenced repo is itself a fork
+  'renamed-repo': 'warning', // referenced repo was renamed / transferred (repo-jacking risk)
+  'archived-repo': 'warning', // referenced repo is archived, no security fixes will land
+  denied: 'error', // matches user deny-list
+  compromised: 'error', // matches built-in list of known-malicious commits
+  'invalid-uses': 'error', // syntactically unusable `uses:` value
+} satisfies Record<string, RuleLevel>
 
-export function defaultConfig(): Config {
-  return { allow: [], deny: [], severity: { ...DEFAULT_SEVERITY } }
-}
+export type RuleId = keyof typeof DEFAULT_SEVERITY
 
 export function parseConfig(text: string | null | undefined): Config {
-  const config = defaultConfig()
+  const config: Config = { allow: [], deny: [], severity: { ...DEFAULT_SEVERITY } }
   if (!text) return config
   const raw = (parse(text) ?? {}) as Record<string, unknown>
   if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('config must be a YAML mapping')

@@ -1,6 +1,6 @@
 export type ActionRef =
   | { kind: 'local'; raw: string }
-  | { kind: 'docker'; raw: string; image: string; digest?: string }
+  | { kind: 'docker'; raw: string; digest?: string }
   | {
       kind: 'repo'
       raw: string
@@ -23,9 +23,7 @@ export function parseActionRef(raw: string): ActionRef {
   if (value.startsWith('./') || value.startsWith('../')) return { kind: 'local', raw: value }
 
   if (value.startsWith('docker://')) {
-    const image = value.slice('docker://'.length)
-    const digest = image.match(DOCKER_DIGEST)?.[0].slice(1)
-    return { kind: 'docker', raw: value, image, digest }
+    return { kind: 'docker', raw: value, digest: value.match(DOCKER_DIGEST)?.[0].slice(1) }
   }
 
   if (value.includes('${{')) {
