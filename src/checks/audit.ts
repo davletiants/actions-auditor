@@ -1,6 +1,6 @@
 import compromisedList from '../../data/compromised.json' with { type: 'json' }
 import { globMatch, type Config } from '../config.js'
-import type { Resolver } from '../resolve/resolver.js'
+import type { RefResolution, Resolver } from '../resolve/resolver.js'
 import { actionName, FULL_SHA, parseActionRef, type ActionRef } from '../scan/reference.js'
 import type { Finding, Fix, RuleId, UsesSite } from '../types.js'
 import { rewriteLine } from './fix.js'
@@ -81,17 +81,41 @@ async function auditRepoRef(
     }
   }
 
+  // `owner/repo` deny entries block the whole action. `owner/repo@ref` entries block one ref and are
+  // matched against the literal ref *and* every commit it resolves to, so a tag can't dodge a SHA entry.
+  const deniedRefs: Array<{ entry: string; ref: string }> = []
   for (const entry of config.deny) {
-    const [pattern, deniedRef] = entry.split('@')
-    const nameHit = globMatch(pattern, repoName) || globMatch(pattern, name)
-    if (nameHit && (!deniedRef || deniedRef.toLowerCase() === ref.ref.toLowerCase())) {
-      add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`)
+    const at = entry.lastIndexOf('@')
+    const pattern = at === -1 ? entry : entry.slice(0, at)
+    if (!globMatch(pattern, repoName) && !globMatch(pattern, name)) continue
+    if (at === -1) add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`)
+    else deniedRefs.push({ entry, ref: entry.slice(at + 1).toLowerCase() })
+  }
+  const reportedDenials = new Set<string>()
+  const checkDeniedRef = (value: string, via?: string) => {
+    for (const d of deniedRefs) {
+      if (d.ref !== value.toLowerCase() || reportedDenials.has(d.entry)) continue
+      reportedDenials.add(d.entry)
+      add('denied', `\`${site.value}\`${via ? ` (resolves to \`${value}\`)` : ''} matches deny-list entry \`${d.entry}\`.`)
     }
   }
+  /** A commit this reference runs, directly or through a tag/branch, must be neither compromised nor denied. */
+  const checkCommit = (sha: string, via?: string) => {
+    checkCompromised(sha, via)
+    checkDeniedRef(sha, via)
+  }
 
+  checkDeniedRef(ref.ref)
   if (ref.isSha) checkCompromised(ref.ref)
 
-  if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) return
+  if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) {
+    // Allowed actions skip the pinning rules, but whatever their tag or branch points at right now
+    // must still not be a known-malicious or denied commit.
+    if (!ref.isSha && !ref.isShortSha) {
+      for (const sha of resolvedShas(await resolver.resolveRef(ref.owner, ref.repo, ref.ref))) checkCommit(sha, ref.ref)
+    }
+    return
+  }
 
   const info = await resolver.repo(ref.owner, ref.repo)
   if (!info) {
@@ -131,9 +155,9 @@ async function auditRepoRef(
   }
 
   const resolved = await resolver.resolveRef(ref.owner, ref.repo, ref.ref)
+  for (const sha of resolvedShas(resolved)) checkCommit(sha, ref.ref)
   switch (resolved.kind) {
     case 'tag': {
-      checkCompromised(resolved.sha, ref.ref)
       let fix: Fix | undefined
       if (trustworthyTarget) {
         const tag = (await resolver.bestTagFor(ref.owner, ref.repo, resolved.sha, ref.ref)) ?? ref.ref
@@ -215,6 +239,18 @@ async function auditPinnedSha(
         }
       : undefined,
   )
+}
+
+function resolvedShas(resolved: RefResolution): string[] {
+  switch (resolved.kind) {
+    case 'tag':
+    case 'branch':
+      return [resolved.sha]
+    case 'ambiguous':
+      return [resolved.tagSha, resolved.branchSha]
+    case 'missing':
+      return []
+  }
 }
 
 /** Extracts a version from common pin comments: `# v4.2.2`, `# tag=v4.2.2`, `# pin@v4.2.2`, `# v4.2.2 (2024-01-01)`. */

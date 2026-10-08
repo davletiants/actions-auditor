@@ -8,7 +8,7 @@ import { OctokitGitApi, type Octokit } from './resolve/github.js'
 import { Resolver } from './resolve/resolver.js'
 import { annotate, postReview, writeSummary } from './report/actions.js'
 import { countBySeverity } from './report/format.js'
-import { addedLines } from './scan/diff.js'
+import { addedLines, isCommentable } from './scan/diff.js'
 import { findAuditedFiles, isAuditedPath } from './scan/files.js'
 import { findUses } from './scan/parse.js'
 import type { UsesSite } from './types.js'
@@ -73,7 +73,9 @@ async function run() {
     for (const e of errors) core.warning(`YAML parse problem: ${e}`, { file })
     if (mode === 'changed') {
       const lines = touched.get(file)
-      sites.push(...found.filter((s) => lines === null || lines?.has(s.line)))
+      sites.push(
+        ...found.filter((s) => lines === null || [s.line, ...(s.alsoAt ?? [])].some((l) => lines?.has(l))),
+      )
     } else {
       sites.push(...found)
     }
@@ -89,18 +91,28 @@ async function run() {
 
   let reviewNote: string | undefined
   if (pr && suggest && findings.length) {
-    // Inline comments are only possible on lines that are part of the PR diff.
-    const commentable = findings.filter((f) => {
-      const lines = touched.get(f.file)
-      return touched.has(f.file) && (lines === null || lines!.has(f.line))
-    })
+    // Inline comments are only possible on lines that are part of the PR diff. When GitHub
+    // omits a file's patch (large diffs) we can't know which lines those are, so skip it;
+    // its findings still get annotations and the summary patch.
+    const commentable = findings.filter((f) => isCommentable(touched, f.file, f.line))
     if (commentable.length) {
-      const result = await postReview(octokit, { owner, repo, pullNumber: pr.number, headSha: pr.head.sha }, commentable)
-      if (result === 'forbidden') {
-        reviewNote =
-          'Could not post suggestions (the token is read-only, as it is for PRs from forks). Use the patch above.'
-        core.warning(reviewNote)
+      try {
+        const result = await postReview(
+          octokit,
+          { owner, repo, pullNumber: pr.number, headSha: pr.head.sha },
+          commentable,
+        )
+        if (result === 'forbidden') {
+          reviewNote =
+            'Could not post suggestions (the token is read-only, as it is for PRs from forks). Use the patch above.'
+        } else if (result === 'rejected') {
+          reviewNote = 'GitHub rejected the inline suggestions (lines outside the diff). Use the patch above.'
+        }
+      } catch (err) {
+        // Commenting is best-effort: never let it hide the summary or change the verdict.
+        reviewNote = `Could not post suggestions: ${err instanceof Error ? err.message : String(err)}. Use the patch above.`
       }
+      if (reviewNote) core.warning(reviewNote)
     }
   }
 
