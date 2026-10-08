@@ -46057,6 +46057,9 @@ async function auditSite(site, ctx) {
         const level = ctx.config.severity[rule];
         if (level === 'off')
             return;
+        // A value spanning several lines can't be fixed by rewriting its one line.
+        if (site.multiline)
+            fix = undefined;
         findings.push({ rule, severity: level, file: site.file, line: site.line, uses: site.value, message, fix });
     };
     const ref = parseActionRef(site.value);
@@ -46094,12 +46097,14 @@ async function auditRepoRef(site, ref, ctx, add) {
     for (const entry of config.deny) {
         const at = entry.lastIndexOf('@');
         const pattern = at === -1 ? entry : entry.slice(0, at);
+        const deniedRef = at === -1 ? '' : entry.slice(at + 1).toLowerCase();
         if (!globMatch(pattern, repoName) && !globMatch(pattern, name))
             continue;
-        if (at === -1)
+        // No ref (or an empty one, `owner/repo@`) blocks the whole action.
+        if (!deniedRef)
             add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`);
         else
-            deniedRefs.push({ entry, ref: entry.slice(at + 1).toLowerCase() });
+            deniedRefs.push({ entry, ref: deniedRef });
     }
     const reportedDenials = new Set();
     const checkDeniedRef = (value, via) => {
@@ -46120,8 +46125,11 @@ async function auditRepoRef(site, ref, ctx, add) {
         checkCompromised(ref.ref);
     if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) {
         // Allowed actions skip the pinning rules, but whatever their tag or branch points at right now
-        // must still not be a known-malicious or denied commit.
-        if (!ref.isSha && !ref.isShortSha) {
+        // must still not be a known-malicious or denied commit. Only ask the API when an entry could match the
+        // resolved commit: allow-listed repos are often private ones the token can't read.
+        const watched = deniedRefs.some((d) => FULL_SHA.test(d.ref)) ||
+            compromised.some((c) => c.action.toLowerCase() === repoName.toLowerCase());
+        if (watched && !ref.isSha && !ref.isShortSha) {
             for (const sha of resolvedShas(await resolver.resolveRef(ref.owner, ref.repo, ref.ref)))
                 checkCommit(sha, ref.ref);
         }
@@ -46616,11 +46624,26 @@ function addedLines(patch) {
     return added;
 }
 /**
- * Whether an inline review comment can be placed on `file:line`. `touched` maps each PR file to
- * its added lines, or `null` when GitHub omitted the patch (large diffs): then we can't know, so no.
+ * Whether `line` is among a file's added lines. `lines` is `undefined` for files the PR doesn't touch,
+ * and `null` when GitHub omitted the patch (large diffs): then we can't know, and `ifUnknown` decides.
  */
+function lineTouched(lines, line, ifUnknown) {
+    return lines === null ? ifUnknown : (lines?.has(line) ?? false);
+}
+/** Whether an inline review comment can be placed on `file:line`. Never in a file whose patch was omitted. */
 function isCommentable(touched, file, line) {
-    return touched.get(file)?.has(line) ?? false;
+    return lineTouched(touched.get(file), line, false);
+}
+/**
+ * The sites a PR may have changed: those on an added line or reached through one (`alsoAt`, e.g. a new
+ * alias), plus any that now run a value in a job where the base version of the file (`baseSites`) didn't.
+ * The latter catches edits that re-point an alias without touching its lines, like renaming anchors or
+ * deleting a redefinition. A file whose patch was omitted is checked in full.
+ */
+function changedSites(found, lines, baseSites) {
+    const ran = new Set(baseSites.flatMap((s) => s.jobs.map((job) => `${job}\0${s.value}`)));
+    return found.filter((s) => s.jobs.some((job) => !ran.has(`${job}\0${s.value}`)) ||
+        [s.line, ...(s.alsoAt ?? [])].some((l) => lineTouched(lines, l, true)));
 }
 
 ;// CONCATENATED MODULE: ./src/scan/files.ts
@@ -46676,10 +46699,15 @@ function findUses(file, text) {
             return [node, via];
         return [node.resolve(doc), node.range ? [...via, lineOf(node.range[0])] : via];
     };
-    const pushSite = (node, at, via, isAliasSite) => {
-        if (typeof node.value !== 'string')
+    /** A map key's name, following an alias key (`*k: value` with `&k uses`). */
+    const keyName = (key) => {
+        const [k] = deref(key, []);
+        return (0,dist/* isScalar */.jn)(k) ? k.value : undefined;
+    };
+    const pushSite = (node, via, job) => {
+        if (typeof node.value !== 'string' || !node.range)
             return;
-        const [valueStart, valueEnd] = at;
+        const [valueStart, valueEnd] = node.range;
         const lineStart = text.lastIndexOf('\n', valueStart - 1) + 1;
         let lineEnd = text.indexOf('\n', valueStart);
         if (lineEnd === -1)
@@ -46692,6 +46720,8 @@ function findUses(file, text) {
         const existing = sites.get(valueStart);
         if (existing) {
             existing.alsoAt = [...new Set([...(existing.alsoAt ?? []), ...alsoAt])];
+            if (!existing.jobs.includes(job))
+                existing.jobs.push(job);
             return;
         }
         sites.set(valueStart, {
@@ -46701,54 +46731,49 @@ function findUses(file, text) {
             value: node.value.trim(),
             valueStart,
             valueEnd,
-            quote: isAliasSite
-                ? ''
-                : node.type === dist/* Scalar */.X5.QUOTE_DOUBLE
-                    ? '"'
-                    : node.type === dist/* Scalar */.X5.QUOTE_SINGLE
-                        ? "'"
-                        : '',
+            quote: node.type === dist/* Scalar */.X5.QUOTE_DOUBLE ? '"' : node.type === dist/* Scalar */.X5.QUOTE_SINGLE ? "'" : '',
             comment: commentMatch ? commentMatch[1] : undefined,
             lineText,
             lineStart,
+            multiline: text.slice(valueStart, valueEnd).includes('\n') || undefined,
             alsoAt: alsoAt.length ? alsoAt : undefined,
+            jobs: [job],
         });
     };
-    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
-    const lookup = (mapNode, key, via, depth = 0) => {
+    /**
+     * A map's `[key, value, via]` entries, following aliases and expanding `<<:` merge keys
+     * (the map's own keys win, then earlier merge sources). Values are raw nodes.
+     */
+    const entries = (mapNode, via, depth = 0) => {
         const [map, mapVia] = deref(mapNode, via);
         if (!(0,dist/* isMap */.jh)(map) || depth > 10)
-            return undefined;
-        const pair = map.items.find((p) => (0,dist/* isScalar */.jn)(p.key) && p.key.value === key);
-        if (pair)
-            return [pair.value, mapVia];
-        for (const merge of map.items.filter((p) => (0,dist/* isScalar */.jn)(p.key) && p.key.value === '<<')) {
-            for (const source of (0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]) {
-                const hit = lookup(source, key, mapVia, depth + 1);
-                if (hit)
-                    return hit;
-            }
-        }
-        return undefined;
+            return [];
+        const own = map.items
+            .filter((p) => keyName(p.key) !== '<<')
+            .map((p) => [keyName(p.key), p.value, mapVia]);
+        const merged = map.items
+            .filter((p) => keyName(p.key) === '<<')
+            .flatMap((merge) => ((0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]))
+            .flatMap((source) => entries(source, mapVia, depth + 1));
+        const seen = new Set();
+        return [...own, ...merged].filter(([key]) => !seen.has(key) && seen.add(key));
     };
-    const collectUses = (mapNode, via) => {
+    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+    const lookup = (mapNode, key, via) => {
+        const hit = entries(mapNode, via).find(([k]) => k === key);
+        return hit && [hit[1], hit[2]];
+    };
+    const collectUses = (mapNode, via, job) => {
         const hit = lookup(mapNode, 'uses', via);
         if (!hit)
             return;
-        const [value, valueVia] = hit;
-        if ((0,dist/* isAlias */.Vj)(value)) {
-            // `uses: *ref`: report at the alias (that's the line to rewrite), but a change to
-            // the anchor's definition also changes what runs here.
-            const target = value.resolve(doc);
-            if ((0,dist/* isScalar */.jn)(target) && target.range && value.range) {
-                pushSite(target, [value.range[0], value.range[1]], [...valueVia, lineOf(target.range[0])], true);
-            }
-        }
-        else if ((0,dist/* isScalar */.jn)(value) && value.range) {
-            pushSite(value, [value.range[0], value.range[1]], valueVia, false);
-        }
+        // `uses: *ref` is reported at the anchored value: fixing it there fixes every alias and keeps them
+        // pointing at the anchor. The alias's line is recorded too, since adding it changes what runs.
+        const [value, valueVia] = deref(...hit);
+        if ((0,dist/* isScalar */.jn)(value))
+            pushSite(value, valueVia, job);
     };
-    const collectSteps = (mapNode, via) => {
+    const collectSteps = (mapNode, via, job) => {
         const hit = lookup(mapNode, 'steps', via);
         if (!hit)
             return;
@@ -46756,18 +46781,16 @@ function findUses(file, text) {
         if (!(0,dist/* isSeq */.oP)(steps))
             return;
         for (const step of steps.items)
-            collectUses(step, stepsVia);
+            collectUses(step, stepsVia, job);
     };
-    const [jobs, jobsVia] = deref(root.get('jobs', true), []);
-    if ((0,dist/* isMap */.jh)(jobs)) {
-        for (const pair of jobs.items) {
-            collectUses(pair.value, jobsVia);
-            collectSteps(pair.value, jobsVia);
-        }
+    const jobs = lookup(root, 'jobs', []);
+    for (const [id, job, jobVia] of jobs ? entries(...jobs) : []) {
+        collectUses(job, jobVia, String(id));
+        collectSteps(job, jobVia, String(id));
     }
     const runs = lookup(root, 'runs', []);
     if (runs)
-        collectSteps(...runs);
+        collectSteps(...runs, '');
     return { sites: [...sites.values()].sort((a, b) => a.valueStart - b.valueStart), errors };
 }
 
@@ -46807,6 +46830,8 @@ async function run() {
     const sites = [];
     /** Lines touched by the PR, per file. `null` = whole file (patch too large to be returned). */
     const touched = new Map();
+    /** Each touched file's path in the base commit, or `null` if it wasn't an audited file there (new, or moved in). */
+    const basePaths = new Map();
     if (pr) {
         const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
             owner,
@@ -46818,6 +46843,8 @@ async function run() {
             if (f.status === 'removed' || !isAuditedPath(f.filename))
                 continue;
             touched.set(f.filename, f.patch ? addedLines(f.patch) : null);
+            const before = f.previous_filename ?? f.filename;
+            basePaths.set(f.filename, f.status !== 'added' && isAuditedPath(before) ? before : null);
         }
     }
     const sources = [];
@@ -46831,15 +46858,20 @@ async function run() {
             sources.push({ file, text: await (0,promises_namespaceObject.readFile)(external_node_path_default().join(workspace(), file), 'utf8') });
         }
     }
+    // The commit the PR is diffed against, so commits that landed on the base branch since aren't blamed on it.
+    const baseSha = pr && mode === 'changed' && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null;
     for (const { file, text } of sources) {
         if (text === null)
             continue;
         const { sites: found, errors } = findUses(file, text);
         for (const e of errors)
             warning(`YAML parse problem: ${e}`, { file });
-        if (mode === 'changed') {
-            const lines = touched.get(file);
-            sites.push(...found.filter((s) => lines === null || [s.line, ...(s.alsoAt ?? [])].some((l) => lines?.has(l))));
+        if (pr && mode === 'changed') {
+            // What the file already ran before this PR, so an edit that re-points an alias is still checked.
+            const basePath = basePaths.get(file);
+            const baseText = basePath && baseSha ? await fetchFile(octokit, owner, repo, basePath, baseSha) : null;
+            const baseSites = baseText ? findUses(file, baseText).sites : [];
+            sites.push(...changedSites(found, touched.get(file), baseSites));
         }
         else {
             sites.push(...found);
@@ -46891,6 +46923,22 @@ async function fetchFile(octokit, owner, repo, file, ref) {
         if (err.status === 404)
             return null;
         throw err;
+    }
+}
+/** The merge base of a PR, which GitHub diffs it against; falls back to the base branch's tip. */
+async function mergeBase(octokit, owner, repo, base, head) {
+    try {
+        const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+            owner,
+            repo,
+            basehead: `${base}...${head}`,
+            per_page: 1,
+        });
+        return data.merge_base_commit.sha;
+    }
+    catch (err) {
+        warning(`Could not find the PR's merge base, comparing against the base branch instead: ${String(err)}`);
+        return base;
     }
 }
 async function listAuditedAt(octokit, owner, repo, sha) {

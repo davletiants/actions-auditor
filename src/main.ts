@@ -8,7 +8,7 @@ import { OctokitGitApi, type Octokit } from './resolve/github.js'
 import { Resolver } from './resolve/resolver.js'
 import { annotate, postReview, writeSummary } from './report/actions.js'
 import { countBySeverity } from './report/format.js'
-import { addedLines, isCommentable } from './scan/diff.js'
+import { addedLines, changedSites, isCommentable } from './scan/diff.js'
 import { findAuditedFiles, isAuditedPath } from './scan/files.js'
 import { findUses } from './scan/parse.js'
 import type { UsesSite } from './types.js'
@@ -43,6 +43,8 @@ async function run() {
   const sites: UsesSite[] = []
   /** Lines touched by the PR, per file. `null` = whole file (patch too large to be returned). */
   const touched = new Map<string, Set<number> | null>()
+  /** Each touched file's path in the base commit, or `null` if it wasn't an audited file there (new, or moved in). */
+  const basePaths = new Map<string, string | null>()
 
   if (pr) {
     const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
@@ -54,6 +56,8 @@ async function run() {
     for (const f of files) {
       if (f.status === 'removed' || !isAuditedPath(f.filename)) continue
       touched.set(f.filename, f.patch ? addedLines(f.patch) : null)
+      const before = f.previous_filename ?? f.filename
+      basePaths.set(f.filename, f.status !== 'added' && isAuditedPath(before) ? before : null)
     }
   }
 
@@ -67,15 +71,20 @@ async function run() {
     }
   }
 
+  // The commit the PR is diffed against, so commits that landed on the base branch since aren't blamed on it.
+  const baseSha =
+    pr && mode === 'changed' && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null
+
   for (const { file, text } of sources) {
     if (text === null) continue
     const { sites: found, errors } = findUses(file, text)
     for (const e of errors) core.warning(`YAML parse problem: ${e}`, { file })
-    if (mode === 'changed') {
-      const lines = touched.get(file)
-      sites.push(
-        ...found.filter((s) => lines === null || [s.line, ...(s.alsoAt ?? [])].some((l) => lines?.has(l))),
-      )
+    if (pr && mode === 'changed') {
+      // What the file already ran before this PR, so an edit that re-points an alias is still checked.
+      const basePath = basePaths.get(file)
+      const baseText = basePath && baseSha ? await fetchFile(octokit, owner, repo, basePath, baseSha) : null
+      const baseSites = baseText ? findUses(file, baseText).sites : []
+      sites.push(...changedSites(found, touched.get(file), baseSites))
     } else {
       sites.push(...found)
     }
@@ -133,6 +142,22 @@ async function fetchFile(octokit: Octokit, owner: string, repo: string, file: st
   } catch (err) {
     if ((err as { status?: number }).status === 404) return null
     throw err
+  }
+}
+
+/** The merge base of a PR, which GitHub diffs it against; falls back to the base branch's tip. */
+async function mergeBase(octokit: Octokit, owner: string, repo: string, base: string, head: string) {
+  try {
+    const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${base}...${head}`,
+      per_page: 1,
+    })
+    return data.merge_base_commit.sha
+  } catch (err) {
+    core.warning(`Could not find the PR's merge base, comparing against the base branch instead: ${String(err)}`)
+    return base
   }
 }
 
