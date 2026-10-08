@@ -63,6 +63,17 @@ describe('YAML anchors and aliases', () => {
     expect(findUses('f.yml', merged).sites.map((s) => s.value)).toEqual(['evil/x@main'])
   })
 
+  it('follows a merge key inside `jobs` that supplies whole jobs', () => {
+    const merged =
+      'x: &more\n  evil:\n    steps: [{uses: evil/x@main}]\n  call:\n    uses: evil/x/.github/workflows/w.yml@main\n' +
+      'jobs:\n  <<: *more\n  ok:\n    steps: [{uses: a/b@v1}]\n'
+    expect(findUses('f.yml', merged).sites.map((s) => [s.value, s.jobs])).toEqual([
+      ['evil/x@main', ['evil']],
+      ['evil/x/.github/workflows/w.yml@main', ['call']],
+      ['a/b@v1', ['ok']],
+    ])
+  })
+
   it('reports a site reached by the same anchor from two places only once', () => {
     const twice = 'x: &s\n  uses: a/b@v1\njobs:\n  a:\n    steps: [*s]\n  b:\n    steps: [*s]\n'
     const { sites } = findUses('f.yml', twice)
@@ -74,9 +85,7 @@ describe('YAML anchors and aliases', () => {
 describe('changed mode', () => {
   const pinned = `good/x@${sha('a')}`
   const changed = (base: string, head: string, lines: Set<number> | null) =>
-    changedSites(findUses('f.yml', head).sites, lines, new Set(findUses('f.yml', base).sites.map((s) => s.value))).map(
-      (s) => s.value,
-    )
+    changedSites(findUses('f.yml', head).sites, lines, findUses('f.yml', base).sites).map((s) => s.value)
 
   it('checks a site an anchor swap re-points, though none of its lines changed', () => {
     const base = `x-a: &a\n  uses: ${pinned}\nx-b: &b\n  uses: evil/x@main\njobs:\n  j:\n    steps:\n      - *a\n`
@@ -95,7 +104,22 @@ describe('changed mode', () => {
     const base = 'x: &s\n  uses: a/b@v1\njobs:\n  a:\n    steps: [*s]\n'
     const head = `${base}  b:\n    steps: [*s]\n`
     expect(changed(base, head, new Set([6, 7]))).toEqual(['a/b@v1'])
-    expect(changed(base, head, new Set())).toEqual([])
+    expect(changed(base, base, new Set())).toEqual([])
+  })
+
+  it('checks a value the file already ran when an anchor swap moves it into another job', () => {
+    const base =
+      `x-a: &a\n  uses: ${pinned}\nx-b: &b\n  uses: evil/x@main\n` +
+      'jobs:\n  unprivileged:\n    steps: [*b]\n  deploy:\n    steps: [*a]\n'
+    const head = base.replace('&a', '&tmp').replace('&b', '&a').replace('&tmp', '&b')
+    // Both values now run in a job that didn't run them before.
+    expect(changed(base, head, new Set([1, 3]))).toEqual([pinned, 'evil/x@main'])
+  })
+
+  it('does not re-check untouched legacy refs when a step is inserted above them', () => {
+    const base = 'jobs:\n  j:\n    steps:\n      - uses: legacy/x@v1\n'
+    const head = `jobs:\n  j:\n    steps:\n      - uses: ${pinned}\n      - uses: legacy/x@v1\n`
+    expect(changed(base, head, new Set([4]))).toEqual([pinned])
   })
 
   it('checks the whole file when GitHub omitted the patch', () => {
@@ -176,13 +200,16 @@ describe('allow / deny cannot be used to dodge commit checks', () => {
     expect((await audit('acme/tool@v2', 'deny: ["acme/tool@"]')).map((f) => f.rule)).toEqual(['denied', 'unpinned-ref'])
   })
 
-  it('makes no API calls for an allow-listed repo no deny or compromised entry can match', async () => {
-    const fake = api()
-    const { sites } = findUses('ci.yml', 'jobs:\n  j:\n    steps:\n      - uses: acme/tool@v1\n')
-    const findings = await auditSites(sites, { resolver: new Resolver(fake), config: parseConfig('allow: ["acme/*"]') })
-    expect(findings).toEqual([])
-    expect(fake.calls).toBe(0)
-  })
+  it.each(['', '\ndeny: ["acme/*@main"]'])(
+    'makes no API calls for an allow-listed repo no deny or compromised entry can match (%j)',
+    async (deny) => {
+      const fake = api()
+      const { sites } = findUses('ci.yml', 'jobs:\n  j:\n    steps:\n      - uses: acme/tool@v1\n')
+      const config = parseConfig(`allow: ["acme/*"]${deny}`)
+      expect(await auditSites(sites, { resolver: new Resolver(fake), config })).toEqual([])
+      expect(fake.calls).toBe(0)
+    },
+  )
 })
 
 describe('fixes', () => {

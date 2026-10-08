@@ -36,7 +36,7 @@ export function findUses(file: string, text: string): ParseResult {
     return isScalar(k) ? k.value : undefined
   }
 
-  const pushSite = (node: Scalar, via: number[]) => {
+  const pushSite = (node: Scalar, via: number[], job: string) => {
     if (typeof node.value !== 'string' || !node.range) return
     const [valueStart, valueEnd] = node.range
     const lineStart = text.lastIndexOf('\n', valueStart - 1) + 1
@@ -51,6 +51,7 @@ export function findUses(file: string, text: string): ParseResult {
     const existing = sites.get(valueStart)
     if (existing) {
       existing.alsoAt = [...new Set([...(existing.alsoAt ?? []), ...alsoAt])]
+      if (!existing.jobs.includes(job)) existing.jobs.push(job)
       return
     }
     sites.set(valueStart, {
@@ -66,54 +67,59 @@ export function findUses(file: string, text: string): ParseResult {
       lineStart,
       multiline: text.slice(valueStart, valueEnd).includes('\n') || undefined,
       alsoAt: alsoAt.length ? alsoAt : undefined,
+      jobs: [job],
     })
   }
 
-  /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
-  const lookup = (mapNode: unknown, key: string, via: number[], depth = 0): [unknown, number[]] | undefined => {
+  /**
+   * A map's `[key, value, via]` entries, following aliases and expanding `<<:` merge keys
+   * (the map's own keys win, then earlier merge sources). Values are raw nodes.
+   */
+  const entries = (mapNode: unknown, via: number[], depth = 0): Array<[unknown, unknown, number[]]> => {
     const [map, mapVia] = deref(mapNode, via)
-    if (!isMap(map) || depth > 10) return undefined
-    const pair = map.items.find((p) => keyName(p.key) === key)
-    if (pair) return [pair.value, mapVia]
-    for (const merge of map.items.filter((p) => keyName(p.key) === '<<')) {
-      for (const source of isSeq(merge.value) ? merge.value.items : [merge.value]) {
-        const hit = lookup(source, key, mapVia, depth + 1)
-        if (hit) return hit
-      }
-    }
-    return undefined
+    if (!isMap(map) || depth > 10) return []
+    const own = map.items
+      .filter((p) => keyName(p.key) !== '<<')
+      .map((p): [unknown, unknown, number[]] => [keyName(p.key), p.value, mapVia])
+    const merged = map.items
+      .filter((p) => keyName(p.key) === '<<')
+      .flatMap((merge) => (isSeq(merge.value) ? merge.value.items : [merge.value]))
+      .flatMap((source) => entries(source, mapVia, depth + 1))
+    const seen = new Set<unknown>()
+    return [...own, ...merged].filter(([key]) => !seen.has(key) && seen.add(key))
   }
 
-  const collectUses = (mapNode: unknown, via: number[]) => {
+  /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+  const lookup = (mapNode: unknown, key: string, via: number[]): [unknown, number[]] | undefined => {
+    const hit = entries(mapNode, via).find(([k]) => k === key)
+    return hit && [hit[1], hit[2]]
+  }
+
+  const collectUses = (mapNode: unknown, via: number[], job: string) => {
     const hit = lookup(mapNode, 'uses', via)
     if (!hit) return
     // `uses: *ref` is reported at the anchored value: fixing it there fixes every alias and keeps them
     // pointing at the anchor. The alias's line is recorded too, since adding it changes what runs.
     const [value, valueVia] = deref(...hit)
-    if (isScalar(value)) pushSite(value, valueVia)
+    if (isScalar(value)) pushSite(value, valueVia, job)
   }
 
-  const collectSteps = (mapNode: unknown, via: number[]) => {
+  const collectSteps = (mapNode: unknown, via: number[], job: string) => {
     const hit = lookup(mapNode, 'steps', via)
     if (!hit) return
     const [steps, stepsVia] = deref(...hit)
     if (!isSeq(steps)) return
-    for (const step of steps.items) collectUses(step, stepsVia)
+    for (const step of steps.items) collectUses(step, stepsVia, job)
   }
 
-  const jobsHit = lookup(root, 'jobs', [])
-  if (jobsHit) {
-    const [jobs, jobsVia] = deref(...jobsHit)
-    if (isMap(jobs)) {
-      for (const pair of jobs.items) {
-        collectUses(pair.value, jobsVia)
-        collectSteps(pair.value, jobsVia)
-      }
-    }
+  const jobs = lookup(root, 'jobs', [])
+  for (const [id, job, jobVia] of jobs ? entries(...jobs) : []) {
+    collectUses(job, jobVia, String(id))
+    collectSteps(job, jobVia, String(id))
   }
 
   const runs = lookup(root, 'runs', [])
-  if (runs) collectSteps(...runs)
+  if (runs) collectSteps(...runs, '')
 
   return { sites: [...sites.values()].sort((a, b) => a.valueStart - b.valueStart), errors }
 }

@@ -71,6 +71,10 @@ async function run() {
     }
   }
 
+  // The commit the PR is diffed against, so commits that landed on the base branch since aren't blamed on it.
+  const baseSha =
+    pr && mode === 'changed' && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null
+
   for (const { file, text } of sources) {
     if (text === null) continue
     const { sites: found, errors } = findUses(file, text)
@@ -78,9 +82,9 @@ async function run() {
     if (pr && mode === 'changed') {
       // What the file already ran before this PR, so an edit that re-points an alias is still checked.
       const basePath = basePaths.get(file)
-      const baseText = basePath ? await fetchFile(octokit, owner, repo, basePath, pr.base.sha) : null
-      const baseValues = new Set(baseText ? findUses(file, baseText).sites.map((s) => s.value) : [])
-      sites.push(...changedSites(found, touched.get(file), baseValues))
+      const baseText = basePath && baseSha ? await fetchFile(octokit, owner, repo, basePath, baseSha) : null
+      const baseSites = baseText ? findUses(file, baseText).sites : []
+      sites.push(...changedSites(found, touched.get(file), baseSites))
     } else {
       sites.push(...found)
     }
@@ -138,6 +142,22 @@ async function fetchFile(octokit: Octokit, owner: string, repo: string, file: st
   } catch (err) {
     if ((err as { status?: number }).status === 404) return null
     throw err
+  }
+}
+
+/** The merge base of a PR, which GitHub diffs it against; falls back to the base branch's tip. */
+async function mergeBase(octokit: Octokit, owner: string, repo: string, base: string, head: string) {
+  try {
+    const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${base}...${head}`,
+      per_page: 1,
+    })
+    return data.merge_base_commit.sha
+  } catch (err) {
+    core.warning(`Could not find the PR's merge base, comparing against the base branch instead: ${String(err)}`)
+    return base
   }
 }
 

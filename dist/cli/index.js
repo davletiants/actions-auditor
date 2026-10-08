@@ -43189,9 +43189,10 @@ async function auditRepoRef(site, ref, ctx, add) {
         checkCompromised(ref.ref);
     if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) {
         // Allowed actions skip the pinning rules, but whatever their tag or branch points at right now
-        // must still not be a known-malicious or denied commit. Only ask the API when an entry could match:
-        // allow-listed repos are often private ones the token can't read.
-        const watched = deniedRefs.length > 0 || compromised.some((c) => c.action.toLowerCase() === repoName.toLowerCase());
+        // must still not be a known-malicious or denied commit. Only ask the API when an entry could match the
+        // resolved commit: allow-listed repos are often private ones the token can't read.
+        const watched = deniedRefs.some((d) => FULL_SHA.test(d.ref)) ||
+            compromised.some((c) => c.action.toLowerCase() === repoName.toLowerCase());
         if (watched && !ref.isSha && !ref.isShortSha) {
             for (const sha of resolvedShas(await resolver.resolveRef(ref.owner, ref.repo, ref.ref)))
                 checkCommit(sha, ref.ref);
@@ -43606,7 +43607,7 @@ function findUses(file, text) {
         const [k] = deref(key, []);
         return (0,dist/* isScalar */.jn)(k) ? k.value : undefined;
     };
-    const pushSite = (node, via) => {
+    const pushSite = (node, via, job) => {
         if (typeof node.value !== 'string' || !node.range)
             return;
         const [valueStart, valueEnd] = node.range;
@@ -43622,6 +43623,8 @@ function findUses(file, text) {
         const existing = sites.get(valueStart);
         if (existing) {
             existing.alsoAt = [...new Set([...(existing.alsoAt ?? []), ...alsoAt])];
+            if (!existing.jobs.includes(job))
+                existing.jobs.push(job);
             return;
         }
         sites.set(valueStart, {
@@ -43637,26 +43640,33 @@ function findUses(file, text) {
             lineStart,
             multiline: text.slice(valueStart, valueEnd).includes('\n') || undefined,
             alsoAt: alsoAt.length ? alsoAt : undefined,
+            jobs: [job],
         });
     };
-    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
-    const lookup = (mapNode, key, via, depth = 0) => {
+    /**
+     * A map's `[key, value, via]` entries, following aliases and expanding `<<:` merge keys
+     * (the map's own keys win, then earlier merge sources). Values are raw nodes.
+     */
+    const entries = (mapNode, via, depth = 0) => {
         const [map, mapVia] = deref(mapNode, via);
         if (!(0,dist/* isMap */.jh)(map) || depth > 10)
-            return undefined;
-        const pair = map.items.find((p) => keyName(p.key) === key);
-        if (pair)
-            return [pair.value, mapVia];
-        for (const merge of map.items.filter((p) => keyName(p.key) === '<<')) {
-            for (const source of (0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]) {
-                const hit = lookup(source, key, mapVia, depth + 1);
-                if (hit)
-                    return hit;
-            }
-        }
-        return undefined;
+            return [];
+        const own = map.items
+            .filter((p) => keyName(p.key) !== '<<')
+            .map((p) => [keyName(p.key), p.value, mapVia]);
+        const merged = map.items
+            .filter((p) => keyName(p.key) === '<<')
+            .flatMap((merge) => ((0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]))
+            .flatMap((source) => entries(source, mapVia, depth + 1));
+        const seen = new Set();
+        return [...own, ...merged].filter(([key]) => !seen.has(key) && seen.add(key));
     };
-    const collectUses = (mapNode, via) => {
+    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+    const lookup = (mapNode, key, via) => {
+        const hit = entries(mapNode, via).find(([k]) => k === key);
+        return hit && [hit[1], hit[2]];
+    };
+    const collectUses = (mapNode, via, job) => {
         const hit = lookup(mapNode, 'uses', via);
         if (!hit)
             return;
@@ -43664,9 +43674,9 @@ function findUses(file, text) {
         // pointing at the anchor. The alias's line is recorded too, since adding it changes what runs.
         const [value, valueVia] = deref(...hit);
         if ((0,dist/* isScalar */.jn)(value))
-            pushSite(value, valueVia);
+            pushSite(value, valueVia, job);
     };
-    const collectSteps = (mapNode, via) => {
+    const collectSteps = (mapNode, via, job) => {
         const hit = lookup(mapNode, 'steps', via);
         if (!hit)
             return;
@@ -43674,21 +43684,16 @@ function findUses(file, text) {
         if (!(0,dist/* isSeq */.oP)(steps))
             return;
         for (const step of steps.items)
-            collectUses(step, stepsVia);
+            collectUses(step, stepsVia, job);
     };
-    const jobsHit = lookup(root, 'jobs', []);
-    if (jobsHit) {
-        const [jobs, jobsVia] = deref(...jobsHit);
-        if ((0,dist/* isMap */.jh)(jobs)) {
-            for (const pair of jobs.items) {
-                collectUses(pair.value, jobsVia);
-                collectSteps(pair.value, jobsVia);
-            }
-        }
+    const jobs = lookup(root, 'jobs', []);
+    for (const [id, job, jobVia] of jobs ? entries(...jobs) : []) {
+        collectUses(job, jobVia, String(id));
+        collectSteps(job, jobVia, String(id));
     }
     const runs = lookup(root, 'runs', []);
     if (runs)
-        collectSteps(...runs);
+        collectSteps(...runs, '');
     return { sites: [...sites.values()].sort((a, b) => a.valueStart - b.valueStart), errors };
 }
 

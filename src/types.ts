@@ -35,6 +35,8 @@ export interface UsesSite {
   lineStart: number
   /** The value spans several lines (e.g. a `>-` block scalar), so it can't be rewritten in place. */
   multiline?: boolean
+  /** Ids of the jobs this `uses:` runs in (`''` for an action's `runs.steps`). */
+  jobs: string[]
   /**
    * Other lines (YAML anchors / aliases) that also determine what this `uses:` runs.
    * In `changed` mode, a PR touching any of them gets this site checked.

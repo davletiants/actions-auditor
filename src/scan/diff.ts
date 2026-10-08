@@ -36,16 +36,15 @@ export function isCommentable(touched: Map<string, Set<number> | null>, file: st
 
 /**
  * The sites a PR may have changed: those on an added line or reached through one (`alsoAt`, e.g. a new
- * alias), plus any whose value the base version of the file never ran. The latter catches edits that
- * re-point an alias without touching its lines, like renaming anchors or deleting a redefinition.
- * A file whose patch was omitted is checked in full.
+ * alias), plus any that now run a value in a job where the base version of the file (`baseSites`) didn't.
+ * The latter catches edits that re-point an alias without touching its lines, like renaming anchors or
+ * deleting a redefinition. A file whose patch was omitted is checked in full.
  */
-export function changedSites(
-  found: UsesSite[],
-  lines: Set<number> | null | undefined,
-  baseValues: ReadonlySet<string>,
-): UsesSite[] {
+export function changedSites(found: UsesSite[], lines: Set<number> | null | undefined, baseSites: UsesSite[]): UsesSite[] {
+  const ran = new Set(baseSites.flatMap((s) => s.jobs.map((job) => `${job}\0${s.value}`)))
   return found.filter(
-    (s) => !baseValues.has(s.value) || [s.line, ...(s.alsoAt ?? [])].some((l) => lineTouched(lines, l, true)),
+    (s) =>
+      s.jobs.some((job) => !ran.has(`${job}\0${s.value}`)) ||
+      [s.line, ...(s.alsoAt ?? [])].some((l) => lineTouched(lines, l, true)),
   )
 }
