@@ -1,4 +1,4 @@
-import type { GitApi, NamedCommit, RepoInfo } from './github.js'
+import type { GitApi, NamedCommit, RepoInfo } from './github.ts'
 
 export type RefResolution =
   | { kind: 'tag'; sha: string }
@@ -15,7 +15,10 @@ const MAX_BRANCH_COMPARES = 20
 export class Resolver {
   private readonly cache = new Map<string, Promise<unknown>>()
 
-  constructor(private readonly api: GitApi) {}
+  private readonly api: GitApi
+  constructor(api: GitApi) {
+    this.api = api
+  }
 
   repo(owner: string, repo: string): Promise<RepoInfo | null> {
     return this.memo(`repo:${owner}/${repo}`, () => this.api.getRepo(owner, repo))

@@ -1,4 +1,4 @@
-import type { GitApi, NamedCommit, RepoInfo } from '../src/resolve/github.js'
+import type { GitApi, NamedCommit, RepoInfo } from '../src/resolve/github.ts'
 
 export interface FakeRepo {
   info?: Partial<RepoInfo>
@@ -15,7 +15,10 @@ export interface FakeRepo {
 /** In-memory GitApi. Counts calls so tests can assert caching. */
 export class FakeGitApi implements GitApi {
   calls = 0
-  constructor(private readonly repos: Record<string, FakeRepo>) {}
+  private readonly repos: Record<string, FakeRepo>
+  constructor(repos: Record<string, FakeRepo>) {
+    this.repos = repos
+  }
 
   private r(owner: string, repo: string) {
     this.calls++

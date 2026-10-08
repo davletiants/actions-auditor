@@ -1,8 +1,8 @@
-import type { Finding } from '../types.js'
+import type { Finding } from '../types.ts'
 
 /**
  * A `git apply --unidiff-zero` compatible patch containing every available fix.
- * Used where we can't post suggestions (fork PRs) and by the CLI's dry run.
+ * Used where we can't post suggestions (fork PRs) and for full scans.
  */
 export function buildPatch(findings: Finding[]): string {
   const byFile = new Map<string, Map<number, Finding>>()
@@ -27,16 +27,6 @@ export function countBySeverity(findings: Finding[]) {
     errors: findings.filter((f) => f.severity === 'error').length,
     warnings: findings.filter((f) => f.severity === 'warning').length,
   }
-}
-
-/** Plain-text rendering for the CLI. */
-export function formatText(findings: Finding[]): string {
-  return findings
-    .map((f) => {
-      const head = `${f.file}:${f.line}  ${f.severity.toUpperCase()}  [${f.rule}]  ${stripTicks(f.message)}`
-      return f.fix ? `${head}\n    fix: ${f.fix.newLine.trim()}` : head
-    })
-    .join('\n')
 }
 
 export function stripTicks(s: string): string {

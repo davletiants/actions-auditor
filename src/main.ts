@@ -1,44 +1,41 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import { readFile } from 'node:fs/promises'
-import path from 'node:path'
-import { auditSites } from './checks/audit.js'
-import { parseConfig } from './config.js'
-import { OctokitGitApi, type Octokit } from './resolve/github.js'
-import { Resolver } from './resolve/resolver.js'
-import { annotate, postReview, writeSummary } from './report/actions.js'
-import { countBySeverity } from './report/format.js'
-import { addedLines, changedSites, isCommentable } from './scan/diff.js'
-import { findAuditedFiles, isAuditedPath } from './scan/files.js'
-import { findUses } from './scan/parse.js'
-import type { UsesSite } from './types.js'
+import { auditSites } from './checks/audit.ts'
+import { parseConfig } from './config.ts'
+import { OctokitGitApi, type Octokit } from './resolve/github.ts'
+import { Resolver } from './resolve/resolver.ts'
+import { annotate, postReview, writeSummary } from './report/actions.ts'
+import { countBySeverity } from './report/format.ts'
+import { addedLines, changedSites, isCommentable } from './scan/diff.ts'
+import { isAuditedPath } from './scan/files.ts'
+import { findUses } from './scan/parse.ts'
+import type { UsesSite } from './types.ts'
 
-type Mode = 'changed' | 'all'
 type FailOn = 'error' | 'warning' | 'never'
 
 async function run() {
   const token = core.getInput('github-token', { required: true })
-  let mode = oneOf<Mode>(core.getInput('mode') || 'changed', ['changed', 'all'], 'mode')
   const failOn = oneOf<FailOn>(core.getInput('fail-on') || 'error', ['error', 'warning', 'never'], 'fail-on')
   const suggest = (core.getInput('suggest') || 'true').toLowerCase() === 'true'
   const configPath = core.getInput('config-path') || '.github/actions-auditor.yml'
+
+  if (github.context.eventName === 'merge_group') {
+    core.info('merge_group: every pull request in the queue was already checked on its own.')
+    return
+  }
 
   const octokit = github.getOctokit(token)
   const { owner, repo } = github.context.repo
   const pr = github.context.payload.pull_request as
     | { number: number; base: { sha: string }; head: { sha: string } }
     | undefined
-  if (mode === 'changed' && !pr) {
-    core.info('Not a pull_request event; scanning all files instead of only changed lines.')
-    mode = 'all'
-  }
+  // PRs check only what they change; other events (schedule, push, workflow_dispatch) check every file.
+  const mode = pr ? 'changed' : 'all'
+  const head = pr?.head.sha ?? github.context.sha
 
-  // On PRs, read config from the *base* commit so a PR cannot loosen the rules it is judged by,
-  // and read workflow files straight from the API at the PR head: no checkout of untrusted code needed.
-  const configText = pr
-    ? await fetchFile(octokit, owner, repo, configPath, pr.base.sha)
-    : await readFile(path.join(workspace(), configPath), 'utf8').catch(() => null)
-  const config = parseConfig(configText)
+  // Everything is read through the API, so no checkout (of untrusted PR code) is needed. On PRs the config
+  // comes from the *base* commit so a PR cannot loosen the rules it is judged by.
+  const config = parseConfig(await fetchFile(octokit, owner, repo, configPath, pr?.base.sha ?? head))
 
   const sites: UsesSite[] = []
   /** Lines touched by the PR, per file. `null` = whole file (patch too large to be returned). */
@@ -62,24 +59,18 @@ async function run() {
   }
 
   const sources: Array<{ file: string; text: string | null }> = []
-  if (pr) {
-    const paths = mode === 'changed' ? [...touched.keys()] : await listAuditedAt(octokit, owner, repo, pr.head.sha)
-    for (const file of paths) sources.push({ file, text: await fetchFile(octokit, owner, repo, file, pr.head.sha) })
-  } else {
-    for (const file of await findAuditedFiles(workspace())) {
-      sources.push({ file, text: await readFile(path.join(workspace(), file), 'utf8') })
-    }
+  for (const file of pr ? touched.keys() : await listAuditedAt(octokit, owner, repo, head)) {
+    sources.push({ file, text: await fetchFile(octokit, owner, repo, file, head) })
   }
 
   // The commit the PR is diffed against, so commits that landed on the base branch since aren't blamed on it.
-  const baseSha =
-    pr && mode === 'changed' && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null
+  const baseSha = pr && touched.size ? await mergeBase(octokit, owner, repo, pr.base.sha, pr.head.sha) : null
 
   for (const { file, text } of sources) {
     if (text === null) continue
     const { sites: found, errors } = findUses(file, text)
     for (const e of errors) core.warning(`YAML parse problem: ${e}`, { file })
-    if (pr && mode === 'changed') {
+    if (pr) {
       // What the file already ran before this PR, so an edit that re-points an alias is still checked.
       const basePath = basePaths.get(file)
       const baseText = basePath && baseSha ? await fetchFile(octokit, owner, repo, basePath, baseSha) : null
@@ -165,10 +156,6 @@ async function listAuditedAt(octokit: Octokit, owner: string, repo: string, sha:
   const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: sha, recursive: 'true' })
   if (data.truncated) core.warning('Repository tree is too large to list fully; some files may not be scanned.')
   return data.tree.filter((e) => e.type === 'blob' && e.path && isAuditedPath(e.path)).map((e) => e.path!)
-}
-
-function workspace(): string {
-  return process.env.GITHUB_WORKSPACE || process.cwd()
 }
 
 function oneOf<T extends string>(value: string, allowed: T[], name: string): T {

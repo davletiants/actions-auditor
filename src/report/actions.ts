@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
-import type { Octokit } from '../resolve/github.js'
-import type { Finding } from '../types.js'
-import { buildPatch, countBySeverity, stripTicks } from './format.js'
+import type { Octokit } from '../resolve/github.ts'
+import type { Finding } from '../types.ts'
+import { buildPatch, countBySeverity, stripTicks } from './format.ts'
 
 const MARKER = 'actions-auditor'
 
@@ -69,11 +69,7 @@ export async function postReview(
   target: PullTarget,
   findings: Finding[],
 ): Promise<'posted' | 'nothing-new' | 'forbidden' | 'rejected'> {
-  const byLine = new Map<string, Finding[]>()
-  for (const f of findings) {
-    const key = `${f.file}:${f.line}`
-    byLine.set(key, [...(byLine.get(key) ?? []), f])
-  }
+  const byLine = Map.groupBy(findings, (f) => `${f.file}:${f.line}`)
 
   const existing = new Set<string>()
   const prior = await octokit.paginate(octokit.rest.pulls.listReviewComments, {

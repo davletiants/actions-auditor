@@ -22,7 +22,7 @@ A full 40-character commit SHA can't be repointed. Install this check early and 
 1. Copy [`examples/actions-auditor.yml`](examples/actions-auditor.yml) to `.github/workflows/actions-auditor.yml`. Replace `your-org/actions-auditor@<sha>` with this repo's release SHA.
 2. In **Settings → Rules** (or branch protection), make the **`audit`** check required on your default branch.
 3. Optional: add [`examples/dependabot.yml`](examples/dependabot.yml). Dependabot updates SHA pins and their `# vX.Y.Z` comments, so pinned actions keep getting updates.
-4. Optional: if the repo already has unpinned actions, run `npx actions-auditor fix` once to pin them all (see the [CLI](#cli) below).
+4. Optional: if the repo already has unpinned actions, add [`examples/actions-auditor-scheduled.yml`](examples/actions-auditor-scheduled.yml), run it once from the Actions tab (*Run workflow*), and apply the patch from its job summary with `git apply --unidiff-zero`.
 
 On each PR, the auditor checks the `uses:` lines the PR adds or changes:
 
@@ -53,7 +53,7 @@ There's no checkout step. Files are read through the API at the PR's head commit
 | `renamed-repo` | warning | The repo name redirects (repo-jacking risk). Auto-suggestions are turned off for it. |
 | `archived-repo` | warning | The repo is archived, so no security fixes will arrive. |
 
-It covers `jobs.<id>.steps[*].uses`, reusable workflows (`jobs.<id>.uses`), and composite actions (`runs.steps[*].uses` in any `action.yml`). YAML anchors, aliases and `<<:` merge keys are followed, so `uses: *ref` is checked like any other line. In `changed` mode, a `uses:` is checked when the PR edits it, adds an alias to it, or makes it run in a job that didn't run it before (for example by renaming or deleting anchors).
+It covers `jobs.<id>.steps[*].uses`, reusable workflows (`jobs.<id>.uses`), and composite actions (`runs.steps[*].uses` in any `action.yml`). YAML anchors and aliases are followed, so `uses: *ref` is checked like any other line. On pull requests, a `uses:` is checked when the PR edits it, adds an alias to it, or makes it run in a job that didn't run it before (for example by renaming or deleting anchors). Other events (schedule, push, `workflow_dispatch`) check every file, except `merge_group`, which passes because each pull request in a merge queue was already checked.
 
 Allow-listed repos skip only the pinning rules. Whatever their tag or branch currently points at is still checked against the compromised list and `owner/repo@sha` deny entries. Deny entries match the resolved commit too, so a tag can't dodge a SHA entry.
 
@@ -62,7 +62,6 @@ Allow-listed repos skip only the pinning rules. Whatever their tag or branch cur
 | Input | Default | |
 |---|---|---|
 | `github-token` | `${{ github.token }}` | Needs `contents: read`, plus `pull-requests: write` for suggestions. Use a PAT or app token if you reference private actions in other repos. |
-| `mode` | `changed` | `changed` checks only what the PR changes: `uses:` lines it touches, and any it makes run in a new job. `all` checks every file (non-PR events always use `all`). |
 | `suggest` | `true` | Post review comments with suggested fixes. |
 | `fail-on` | `error` | `error`, `warning`, or `never`. |
 | `config-path` | `.github/actions-auditor.yml` | See [`examples/actions-auditor-config.yml`](examples/actions-auditor-config.yml). |
@@ -79,20 +78,6 @@ severity: { comment-drift: error, archived-repo: off }
 ```
 
 On PRs, the config is read from the **base** commit, so a PR can't loosen the rules it's judged by.
-
-## CLI
-
-```bash
-npx actions-auditor scan            # report findings, exit 1 on errors
-```
-```bash
-npx actions-auditor fix             # rewrite tag refs to SHAs in place, keeping formatting
-```
-```bash
-npx actions-auditor patch > pin.patch
-```
-
-For a token, the CLI uses `GITHUB_TOKEN`, then `GH_TOKEN`, then your `gh auth login` session.
 
 ## Hardening the gate
 
@@ -121,4 +106,4 @@ npm ci
 npm run all
 ```
 
-`npm run all` typechecks, runs the tests (`vitest`, with an in-memory GitHub API fake), and bundles to `dist/` with `ncc`. `dist/` is committed, because GitHub runs it directly. CI fails if it's stale.
+`npm run all` typechecks, runs the tests (`node --test`, with an in-memory GitHub API fake), and bundles to `dist/` with `ncc`. `dist/` is committed, because GitHub runs it directly. CI fails if it's stale.

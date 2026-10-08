@@ -11,11 +11,6 @@ inputs:
       Token used to resolve tags and to post review suggestions. Needs `contents: read` and,
       for suggestions, `pull-requests: write`. Use a token that can read any private actions you reference.
     default: ${{ github.token }}
-  mode:
-    description: >
-      `changed` (default) checks only `uses:` lines added or modified by the pull request.
-      `all` checks every workflow and action.yml file. Non-PR events always use `all`.
-    default: changed
   suggest:
     description: Post inline review comments with one-click suggested fixes.
     default: 'true'
