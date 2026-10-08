@@ -8,7 +8,7 @@ import { OctokitGitApi, type Octokit } from './resolve/github.js'
 import { Resolver } from './resolve/resolver.js'
 import { annotate, postReview, writeSummary } from './report/actions.js'
 import { countBySeverity } from './report/format.js'
-import { addedLines, isCommentable } from './scan/diff.js'
+import { addedLines, changedSites, isCommentable } from './scan/diff.js'
 import { findAuditedFiles, isAuditedPath } from './scan/files.js'
 import { findUses } from './scan/parse.js'
 import type { UsesSite } from './types.js'
@@ -43,6 +43,8 @@ async function run() {
   const sites: UsesSite[] = []
   /** Lines touched by the PR, per file. `null` = whole file (patch too large to be returned). */
   const touched = new Map<string, Set<number> | null>()
+  /** Each touched file's path in the base commit, or `null` if it wasn't an audited file there (new, or moved in). */
+  const basePaths = new Map<string, string | null>()
 
   if (pr) {
     const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
@@ -54,6 +56,8 @@ async function run() {
     for (const f of files) {
       if (f.status === 'removed' || !isAuditedPath(f.filename)) continue
       touched.set(f.filename, f.patch ? addedLines(f.patch) : null)
+      const before = f.previous_filename ?? f.filename
+      basePaths.set(f.filename, f.status !== 'added' && isAuditedPath(before) ? before : null)
     }
   }
 
@@ -71,11 +75,12 @@ async function run() {
     if (text === null) continue
     const { sites: found, errors } = findUses(file, text)
     for (const e of errors) core.warning(`YAML parse problem: ${e}`, { file })
-    if (mode === 'changed') {
-      const lines = touched.get(file)
-      sites.push(
-        ...found.filter((s) => lines === null || [s.line, ...(s.alsoAt ?? [])].some((l) => lines?.has(l))),
-      )
+    if (pr && mode === 'changed') {
+      // What the file already ran before this PR, so an edit that re-points an alias is still checked.
+      const basePath = basePaths.get(file)
+      const baseText = basePath ? await fetchFile(octokit, owner, repo, basePath, pr.base.sha) : null
+      const baseValues = new Set(baseText ? findUses(file, baseText).sites.map((s) => s.value) : [])
+      sites.push(...changedSites(found, touched.get(file), baseValues))
     } else {
       sites.push(...found)
     }

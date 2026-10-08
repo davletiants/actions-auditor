@@ -34,6 +34,8 @@ export async function auditSite(site: UsesSite, ctx: AuditContext): Promise<Find
   const add = (rule: RuleId, message: string, fix?: Fix) => {
     const level = ctx.config.severity[rule]
     if (level === 'off') return
+    // A value spanning several lines can't be fixed by rewriting its one line.
+    if (site.multiline) fix = undefined
     findings.push({ rule, severity: level, file: site.file, line: site.line, uses: site.value, message, fix })
   }
 
@@ -87,9 +89,11 @@ async function auditRepoRef(
   for (const entry of config.deny) {
     const at = entry.lastIndexOf('@')
     const pattern = at === -1 ? entry : entry.slice(0, at)
+    const deniedRef = at === -1 ? '' : entry.slice(at + 1).toLowerCase()
     if (!globMatch(pattern, repoName) && !globMatch(pattern, name)) continue
-    if (at === -1) add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`)
-    else deniedRefs.push({ entry, ref: entry.slice(at + 1).toLowerCase() })
+    // No ref (or an empty one, `owner/repo@`) blocks the whole action.
+    if (!deniedRef) add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`)
+    else deniedRefs.push({ entry, ref: deniedRef })
   }
   const reportedDenials = new Set<string>()
   const checkDeniedRef = (value: string, via?: string) => {
@@ -110,8 +114,11 @@ async function auditRepoRef(
 
   if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) {
     // Allowed actions skip the pinning rules, but whatever their tag or branch points at right now
-    // must still not be a known-malicious or denied commit.
-    if (!ref.isSha && !ref.isShortSha) {
+    // must still not be a known-malicious or denied commit. Only ask the API when an entry could match:
+    // allow-listed repos are often private ones the token can't read.
+    const watched =
+      deniedRefs.length > 0 || compromised.some((c) => c.action.toLowerCase() === repoName.toLowerCase())
+    if (watched && !ref.isSha && !ref.isShortSha) {
       for (const sha of resolvedShas(await resolver.resolveRef(ref.owner, ref.repo, ref.ref))) checkCommit(sha, ref.ref)
     }
     return

@@ -30,9 +30,15 @@ export function findUses(file: string, text: string): ParseResult {
     return [node.resolve(doc), node.range ? [...via, lineOf(node.range[0])] : via]
   }
 
-  const pushSite = (node: Scalar, at: [number, number], via: number[], isAliasSite: boolean) => {
-    if (typeof node.value !== 'string') return
-    const [valueStart, valueEnd] = at
+  /** A map key's name, following an alias key (`*k: value` with `&k uses`). */
+  const keyName = (key: unknown) => {
+    const [k] = deref(key, [])
+    return isScalar(k) ? k.value : undefined
+  }
+
+  const pushSite = (node: Scalar, via: number[]) => {
+    if (typeof node.value !== 'string' || !node.range) return
+    const [valueStart, valueEnd] = node.range
     const lineStart = text.lastIndexOf('\n', valueStart - 1) + 1
     let lineEnd = text.indexOf('\n', valueStart)
     if (lineEnd === -1) lineEnd = text.length
@@ -54,16 +60,11 @@ export function findUses(file: string, text: string): ParseResult {
       value: node.value.trim(),
       valueStart,
       valueEnd,
-      quote: isAliasSite
-        ? ''
-        : node.type === Scalar.QUOTE_DOUBLE
-          ? '"'
-          : node.type === Scalar.QUOTE_SINGLE
-            ? "'"
-            : '',
+      quote: node.type === Scalar.QUOTE_DOUBLE ? '"' : node.type === Scalar.QUOTE_SINGLE ? "'" : '',
       comment: commentMatch ? commentMatch[1] : undefined,
       lineText,
       lineStart,
+      multiline: text.slice(valueStart, valueEnd).includes('\n') || undefined,
       alsoAt: alsoAt.length ? alsoAt : undefined,
     })
   }
@@ -72,9 +73,9 @@ export function findUses(file: string, text: string): ParseResult {
   const lookup = (mapNode: unknown, key: string, via: number[], depth = 0): [unknown, number[]] | undefined => {
     const [map, mapVia] = deref(mapNode, via)
     if (!isMap(map) || depth > 10) return undefined
-    const pair = map.items.find((p) => isScalar(p.key) && p.key.value === key)
+    const pair = map.items.find((p) => keyName(p.key) === key)
     if (pair) return [pair.value, mapVia]
-    for (const merge of map.items.filter((p) => isScalar(p.key) && p.key.value === '<<')) {
+    for (const merge of map.items.filter((p) => keyName(p.key) === '<<')) {
       for (const source of isSeq(merge.value) ? merge.value.items : [merge.value]) {
         const hit = lookup(source, key, mapVia, depth + 1)
         if (hit) return hit
@@ -86,17 +87,10 @@ export function findUses(file: string, text: string): ParseResult {
   const collectUses = (mapNode: unknown, via: number[]) => {
     const hit = lookup(mapNode, 'uses', via)
     if (!hit) return
-    const [value, valueVia] = hit
-    if (isAlias(value)) {
-      // `uses: *ref`: report at the alias (that's the line to rewrite), but a change to
-      // the anchor's definition also changes what runs here.
-      const target = value.resolve(doc)
-      if (isScalar(target) && target.range && value.range) {
-        pushSite(target, [value.range[0], value.range[1]], [...valueVia, lineOf(target.range[0])], true)
-      }
-    } else if (isScalar(value) && value.range) {
-      pushSite(value, [value.range[0], value.range[1]], valueVia, false)
-    }
+    // `uses: *ref` is reported at the anchored value: fixing it there fixes every alias and keeps them
+    // pointing at the anchor. The alias's line is recorded too, since adding it changes what runs.
+    const [value, valueVia] = deref(...hit)
+    if (isScalar(value)) pushSite(value, valueVia)
   }
 
   const collectSteps = (mapNode: unknown, via: number[]) => {
@@ -107,11 +101,14 @@ export function findUses(file: string, text: string): ParseResult {
     for (const step of steps.items) collectUses(step, stepsVia)
   }
 
-  const [jobs, jobsVia] = deref(root.get('jobs', true), [])
-  if (isMap(jobs)) {
-    for (const pair of jobs.items) {
-      collectUses(pair.value, jobsVia)
-      collectSteps(pair.value, jobsVia)
+  const jobsHit = lookup(root, 'jobs', [])
+  if (jobsHit) {
+    const [jobs, jobsVia] = deref(...jobsHit)
+    if (isMap(jobs)) {
+      for (const pair of jobs.items) {
+        collectUses(pair.value, jobsVia)
+        collectSteps(pair.value, jobsVia)
+      }
     }
   }
 

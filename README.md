@@ -53,7 +53,7 @@ There's no checkout step. Files are read through the API at the PR's head commit
 | `renamed-repo` | warning | The repo name redirects (repo-jacking risk). Auto-suggestions are turned off for it. |
 | `archived-repo` | warning | The repo is archived, so no security fixes will arrive. |
 
-It covers `jobs.<id>.steps[*].uses`, reusable workflows (`jobs.<id>.uses`), and composite actions (`runs.steps[*].uses` in any `action.yml`). YAML anchors, aliases and `<<:` merge keys are followed, so `uses: *ref` is checked like any other line. In `changed` mode, a PR that edits an anchor's definition gets every place using it checked.
+It covers `jobs.<id>.steps[*].uses`, reusable workflows (`jobs.<id>.uses`), and composite actions (`runs.steps[*].uses` in any `action.yml`). YAML anchors, aliases and `<<:` merge keys are followed, so `uses: *ref` is checked like any other line. In `changed` mode, a `uses:` is checked when the PR edits it, adds an alias to it, or makes it run where it didn't before (for example by renaming or deleting anchors).
 
 Allow-listed repos skip only the pinning rules. Whatever their tag or branch currently points at is still checked against the compromised list and `owner/repo@sha` deny entries. Deny entries match the resolved commit too, so a tag can't dodge a SHA entry.
 

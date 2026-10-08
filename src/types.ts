@@ -33,6 +33,8 @@ export interface UsesSite {
   lineText: string
   /** Offset of the start of the line in the file text. */
   lineStart: number
+  /** The value spans several lines (e.g. a `>-` block scalar), so it can't be rewritten in place. */
+  multiline?: boolean
   /**
    * Other lines (YAML anchors / aliases) that also determine what this `uses:` runs.
    * In `changed` mode, a PR touching any of them gets this site checked.
