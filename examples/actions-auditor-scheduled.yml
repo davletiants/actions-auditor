@@ -1,0 +1,21 @@
+# Optional: weekly full scan. Catches things a PR check can't, like a tag you pinned
+# months ago that later shows up in the known-compromised list, or a repo that was archived or renamed.
+name: actions-auditor (scheduled)
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: your-org/actions-auditor@0000000000000000000000000000000000000000 # v0.1.0
+        with:
+          mode: all

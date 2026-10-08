@@ -1,0 +1,24 @@
+# Copy to .github/workflows/actions-auditor.yml, then make the "actions-auditor / audit"
+# check required in branch protection (or a ruleset) so failing PRs cannot merge.
+name: actions-auditor
+on:
+  # No `paths:` filter on purpose: a required check that never runs leaves unrelated PRs
+  # stuck on "Expected - waiting for status". When no workflow files changed, the action
+  # finishes in a couple of seconds with one API call.
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # for one-click "suggested change" comments; drop it to annotate only
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout needed: on PRs the action reads files from the API at the PR head commit.
+      # Pin the auditor itself by SHA, too (replace with a real release SHA).
+      - uses: your-org/actions-auditor@0000000000000000000000000000000000000000 # v0.1.0
+        # with:
+        #   mode: changed       # or `all` to check every file on every PR
+        #   fail-on: error      # error | warning | never
+        #   suggest: true

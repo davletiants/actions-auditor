@@ -1,0 +1,13 @@
+# Copy to .github/dependabot.yml. Dependabot understands SHA pins: it bumps the SHA
+# and rewrites the trailing "# vX.Y.Z" comment, so pinning doesn't mean falling behind.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # let the ecosystem notice a malicious release before you adopt it
+    groups:
+      actions:
+        patterns: ['*']

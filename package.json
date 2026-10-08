@@ -1,0 +1,31 @@
+{
+  "name": "actions-auditor",
+  "version": "0.1.0",
+  "description": "GitHub Action that blocks PRs adding GitHub Actions not pinned to a full commit SHA, and suggests the fix.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "actions-auditor": "dist/cli/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "ncc build src/main.ts -o dist --license licenses.txt && ncc build src/cli.ts -o dist/cli",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "all": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@vercel/ncc": "^0.45.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "action": "tj-actions/changed-files",
+    "sha": "0e58ed8671d6b60d0890c21b07f8835ace038e67",
+    "advisory": "https://github.com/advisories/GHSA-mrrh-fwg8-r2c3",
+    "note": "CVE-2025-30066: tags repointed to a commit that dumped runner secrets to logs (March 2025)"
+  },
+  {
+    "action": "reviewdog/action-setup",
+    "sha": "f0d342d24037bb11d26b9bd8496e0808ba32e9ec",
+    "advisory": "https://nvd.nist.gov/vuln/detail/CVE-2025-30154",
+    "note": "CVE-2025-30154: v1 tag repointed to a commit that dumped runner secrets to logs (March 2025)"
+  }
+]

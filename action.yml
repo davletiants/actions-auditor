@@ -1,0 +1,37 @@
+name: actions-auditor
+description: Fail PRs that add GitHub Actions not pinned to a full commit SHA, and suggest the pinned version.
+author: actions-auditor
+branding:
+  icon: lock
+  color: red
+
+inputs:
+  github-token:
+    description: >
+      Token used to resolve tags and to post review suggestions. Needs `contents: read` and,
+      for suggestions, `pull-requests: write`. Use a token that can read any private actions you reference.
+    default: ${{ github.token }}
+  mode:
+    description: >
+      `changed` (default) checks only `uses:` lines added or modified by the pull request.
+      `all` checks every workflow and action.yml file. Non-PR events always use `all`.
+    default: changed
+  suggest:
+    description: Post inline review comments with one-click suggested fixes.
+    default: 'true'
+  fail-on:
+    description: Fail the check on `error` (default), `warning`, or `never` (report only).
+    default: error
+  config-path:
+    description: Config file path. On PRs it is read from the base commit, so a PR cannot weaken its own check.
+    default: .github/actions-auditor.yml
+
+outputs:
+  findings-count:
+    description: Number of findings.
+  findings-json:
+    description: Findings as a JSON array.
+
+runs:
+  using: node24
+  main: dist/index.js
