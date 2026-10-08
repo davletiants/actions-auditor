@@ -13,9 +13,5 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
+      # No checkout needed: every workflow and action.yml is read through the API at the triggering commit.
       - uses: your-org/actions-auditor@0000000000000000000000000000000000000000 # v0.1.0
-        with:
-          mode: all

@@ -1,4 +1,4 @@
-import type { UsesSite } from '../types.js'
+import type { UsesSite } from '../types.ts'
 
 /**
  * Line numbers (new-file side, 1-based) added or modified by a unified diff patch,
@@ -22,16 +22,11 @@ export function addedLines(patch: string): Set<number> {
 }
 
 /**
- * Whether `line` is among a file's added lines. `lines` is `undefined` for files the PR doesn't touch,
- * and `null` when GitHub omitted the patch (large diffs): then we can't know, and `ifUnknown` decides.
+ * Whether an inline review comment can be placed on `file:line`. `touched` maps each PR file to its added
+ * lines, or `null` when GitHub omitted the patch (large diffs): then we can't know, so no.
  */
-export function lineTouched(lines: Set<number> | null | undefined, line: number, ifUnknown: boolean): boolean {
-  return lines === null ? ifUnknown : (lines?.has(line) ?? false)
-}
-
-/** Whether an inline review comment can be placed on `file:line`. Never in a file whose patch was omitted. */
 export function isCommentable(touched: Map<string, Set<number> | null>, file: string, line: number): boolean {
-  return lineTouched(touched.get(file), line, false)
+  return touched.get(file)?.has(line) ?? false
 }
 
 /**
@@ -45,6 +40,6 @@ export function changedSites(found: UsesSite[], lines: Set<number> | null | unde
   return found.filter(
     (s) =>
       s.jobs.some((job) => !ran.has(`${job}\0${s.value}`)) ||
-      [s.line, ...(s.alsoAt ?? [])].some((l) => lineTouched(lines, l, true)),
+      [s.line, ...(s.alsoAt ?? [])].some((l) => lines === null || !!lines?.has(l)),
   )
 }

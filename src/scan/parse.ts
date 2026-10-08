@@ -1,5 +1,5 @@
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument, Scalar } from 'yaml'
-import type { UsesSite } from '../types.js'
+import type { UsesSite } from '../types.ts'
 
 export interface ParseResult {
   sites: UsesSite[]
@@ -10,7 +10,7 @@ export interface ParseResult {
  * Finds every `uses:` that GitHub would actually execute:
  *   workflows: jobs.<id>.uses (reusable workflow) and jobs.<id>.steps[*].uses
  *   action.yml: runs.steps[*].uses (composite actions)
- * YAML anchors/aliases and merge keys are followed, so `uses: *ref` or `- *step` can't
+ * YAML anchors and aliases are followed (GitHub rejects `<<:` merge keys), so `uses: *ref` or `- *step` can't
  * slip past. Positions are kept so findings can be annotated and fixed in place without
  * re-serializing (and reformatting) the user's YAML.
  */
@@ -57,7 +57,6 @@ export function findUses(file: string, text: string): ParseResult {
     sites.set(valueStart, {
       file,
       line: pos.line,
-      column: pos.col,
       value: node.value.trim(),
       valueStart,
       valueEnd,
@@ -71,25 +70,13 @@ export function findUses(file: string, text: string): ParseResult {
     })
   }
 
-  /**
-   * A map's `[key, value, via]` entries, following aliases and expanding `<<:` merge keys
-   * (the map's own keys win, then earlier merge sources). Values are raw nodes.
-   */
-  const entries = (mapNode: unknown, via: number[], depth = 0): Array<[unknown, unknown, number[]]> => {
+  /** A map's `[key, value, via]` entries, following an aliased map. Values are raw nodes. */
+  const entries = (mapNode: unknown, via: number[]): Array<[unknown, unknown, number[]]> => {
     const [map, mapVia] = deref(mapNode, via)
-    if (!isMap(map) || depth > 10) return []
-    const own = map.items
-      .filter((p) => keyName(p.key) !== '<<')
-      .map((p): [unknown, unknown, number[]] => [keyName(p.key), p.value, mapVia])
-    const merged = map.items
-      .filter((p) => keyName(p.key) === '<<')
-      .flatMap((merge) => (isSeq(merge.value) ? merge.value.items : [merge.value]))
-      .flatMap((source) => entries(source, mapVia, depth + 1))
-    const seen = new Set<unknown>()
-    return [...own, ...merged].filter(([key]) => !seen.has(key) && seen.add(key))
+    return isMap(map) ? map.items.map((p): [unknown, unknown, number[]] => [keyName(p.key), p.value, mapVia]) : []
   }
 
-  /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+  /** Looks up `key` in a map, following aliases. Returns the raw value node. */
   const lookup = (mapNode: unknown, key: string, via: number[]): [unknown, number[]] | undefined => {
     const hit = entries(mapNode, via).find(([k]) => k === key)
     return hit && [hit[1], hit[2]]

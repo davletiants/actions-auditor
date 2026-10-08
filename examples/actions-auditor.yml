@@ -19,6 +19,5 @@ jobs:
       # Pin the auditor itself by SHA, too (replace with a real release SHA).
       - uses: your-org/actions-auditor@0000000000000000000000000000000000000000 # v0.1.0
         # with:
-        #   mode: changed       # or `all` to check every file on every PR
         #   fail-on: error      # error | warning | never
         #   suggest: true

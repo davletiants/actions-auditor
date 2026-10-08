@@ -1,23 +1,16 @@
 import compromisedList from '../../data/compromised.json' with { type: 'json' }
-import { globMatch, type Config } from '../config.js'
-import type { RefResolution, Resolver } from '../resolve/resolver.js'
-import { actionName, FULL_SHA, parseActionRef, type ActionRef } from '../scan/reference.js'
-import type { Finding, Fix, RuleId, UsesSite } from '../types.js'
-import { rewriteLine } from './fix.js'
+import { globMatch, type Config, type RuleId } from '../config.ts'
+import type { RefResolution, Resolver } from '../resolve/resolver.ts'
+import { actionName, FULL_SHA, parseActionRef, type ActionRef } from '../scan/reference.ts'
+import type { Finding, Fix, UsesSite } from '../types.ts'
+import { rewriteLine } from './fix.ts'
 
-export interface CompromisedEntry {
-  action: string
-  sha: string
-  advisory: string
-  note?: string
-}
-
-export const BUILTIN_COMPROMISED: CompromisedEntry[] = compromisedList
+// Typed so a malformed entry (e.g. a misspelt `sha`) fails the typecheck instead of silently never matching.
+const compromised: Array<{ action: string; sha: string; advisory: string; note?: string }> = compromisedList
 
 export interface AuditContext {
   resolver: Resolver
   config: Config
-  compromised?: CompromisedEntry[]
 }
 
 type RepoRef = Extract<ActionRef, { kind: 'repo' }>
@@ -70,7 +63,6 @@ async function auditRepoRef(
   const { resolver, config } = ctx
   const name = actionName(ref)
   const repoName = `${ref.owner}/${ref.repo}`
-  const compromised = ctx.compromised ?? BUILTIN_COMPROMISED
 
   const checkCompromised = (sha: string, via?: string) => {
     const hit = compromised.find((c) => c.action.toLowerCase() === repoName.toLowerCase() && c.sha === sha)

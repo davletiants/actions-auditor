@@ -1,4 +1,4 @@
-import type { UsesSite } from '../types.js'
+import type { UsesSite } from '../types.ts'
 
 /**
  * Rewrites the `uses:` value on its line, keeping indentation, quoting and any flow-style
@@ -16,13 +16,4 @@ export function rewriteLine(site: UsesSite, newValue: string, commentTag?: strin
   // Flow style (`- { uses: x@v1, with: ... }`): leave the rest alone, append a comment if none.
   const tail = commentTag && !/\s#/.test(after) ? `${after} # ${commentTag}` : after
   return `${before}${scalar}${tail}`
-}
-
-/** Applies line rewrites to a whole file's text. Lines are 1-based. */
-export function applyLineFixes(text: string, fixes: Map<number, string>): string {
-  if (!fixes.size) return text
-  const eol = text.includes('\r\n') ? '\r\n' : '\n'
-  const lines = text.split(/\r?\n/)
-  for (const [line, newLine] of fixes) lines[line - 1] = newLine
-  return lines.join(eol)
 }
