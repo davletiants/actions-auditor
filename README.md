@@ -4,7 +4,7 @@ A pull-request gate that fails when someone adds a GitHub Action that isn't pinn
 
 ```diff
 -      - uses: actions/checkout@v4
-+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
++      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 ```
 
 ## Why
