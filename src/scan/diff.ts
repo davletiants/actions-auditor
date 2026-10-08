@@ -18,3 +18,11 @@ export function addedLines(patch: string): Set<number> {
   }
   return added
 }
+
+/**
+ * Whether an inline review comment can be placed on `file:line`. `touched` maps each PR file to
+ * its added lines, or `null` when GitHub omitted the patch (large diffs): then we can't know, so no.
+ */
+export function isCommentable(touched: Map<string, Set<number> | null>, file: string, line: number): boolean {
+  return touched.get(file)?.has(line) ?? false
+}

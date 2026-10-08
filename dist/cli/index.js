@@ -31951,7 +31951,7 @@ __webpack_unused_export__ = errors.YAMLError;
 __webpack_unused_export__ = errors.YAMLParseError;
 __webpack_unused_export__ = errors.YAMLWarning;
 __webpack_unused_export__ = Alias.Alias;
-__webpack_unused_export__ = identity.isAlias;
+exports.Vj = identity.isAlias;
 __webpack_unused_export__ = identity.isCollection;
 __webpack_unused_export__ = identity.isDocument;
 exports.jh = identity.isMap;
@@ -43152,17 +43152,45 @@ async function auditRepoRef(site, ref, ctx, add) {
                 `${hit.note ? `${hit.note}. ` : ''}See ${hit.advisory}. Rotate any secrets this workflow could access.`);
         }
     };
+    // `owner/repo` deny entries block the whole action. `owner/repo@ref` entries block one ref and are
+    // matched against the literal ref *and* every commit it resolves to, so a tag can't dodge a SHA entry.
+    const deniedRefs = [];
     for (const entry of config.deny) {
-        const [pattern, deniedRef] = entry.split('@');
-        const nameHit = globMatch(pattern, repoName) || globMatch(pattern, name);
-        if (nameHit && (!deniedRef || deniedRef.toLowerCase() === ref.ref.toLowerCase())) {
+        const at = entry.lastIndexOf('@');
+        const pattern = at === -1 ? entry : entry.slice(0, at);
+        if (!globMatch(pattern, repoName) && !globMatch(pattern, name))
+            continue;
+        if (at === -1)
             add('denied', `\`${site.value}\` matches deny-list entry \`${entry}\`.`);
-        }
+        else
+            deniedRefs.push({ entry, ref: entry.slice(at + 1).toLowerCase() });
     }
+    const reportedDenials = new Set();
+    const checkDeniedRef = (value, via) => {
+        for (const d of deniedRefs) {
+            if (d.ref !== value.toLowerCase() || reportedDenials.has(d.entry))
+                continue;
+            reportedDenials.add(d.entry);
+            add('denied', `\`${site.value}\`${via ? ` (resolves to \`${value}\`)` : ''} matches deny-list entry \`${d.entry}\`.`);
+        }
+    };
+    /** A commit this reference runs, directly or through a tag/branch, must be neither compromised nor denied. */
+    const checkCommit = (sha, via) => {
+        checkCompromised(sha, via);
+        checkDeniedRef(sha, via);
+    };
+    checkDeniedRef(ref.ref);
     if (ref.isSha)
         checkCompromised(ref.ref);
-    if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name)))
+    if (config.allow.some((p) => globMatch(p, repoName) || globMatch(p, name))) {
+        // Allowed actions skip the pinning rules, but whatever their tag or branch points at right now
+        // must still not be a known-malicious or denied commit.
+        if (!ref.isSha && !ref.isShortSha) {
+            for (const sha of resolvedShas(await resolver.resolveRef(ref.owner, ref.repo, ref.ref)))
+                checkCommit(sha, ref.ref);
+        }
         return;
+    }
     const info = await resolver.repo(ref.owner, ref.repo);
     if (!info) {
         add('unresolvable-ref', `Repository \`${repoName}\` was not found. If it is private, give the auditor a token that can read it.`);
@@ -43191,9 +43219,10 @@ async function auditRepoRef(site, ref, ctx, add) {
         return;
     }
     const resolved = await resolver.resolveRef(ref.owner, ref.repo, ref.ref);
+    for (const sha of resolvedShas(resolved))
+        checkCommit(sha, ref.ref);
     switch (resolved.kind) {
         case 'tag': {
-            checkCompromised(resolved.sha, ref.ref);
             let fix;
             if (trustworthyTarget) {
                 const tag = (await resolver.bestTagFor(ref.owner, ref.repo, resolved.sha, ref.ref)) ?? ref.ref;
@@ -43254,6 +43283,17 @@ async function auditPinnedSha(site, ref, ctx, add) {
             description: `correct comment to ${actual}`,
         }
         : undefined);
+}
+function resolvedShas(resolved) {
+    switch (resolved.kind) {
+        case 'tag':
+        case 'branch':
+            return [resolved.sha];
+        case 'ambiguous':
+            return [resolved.tagSha, resolved.branchSha];
+        case 'missing':
+            return [];
+    }
 }
 /** Extracts a version from common pin comments: `# v4.2.2`, `# tag=v4.2.2`, `# pin@v4.2.2`, `# v4.2.2 (2024-01-01)`. */
 function versionFromComment(comment) {
@@ -43535,29 +43575,29 @@ async function findAuditedFiles(root) {
  * Finds every `uses:` that GitHub would actually execute:
  *   workflows: jobs.<id>.uses (reusable workflow) and jobs.<id>.steps[*].uses
  *   action.yml: runs.steps[*].uses (composite actions)
- * Positions are kept so findings can be annotated and fixed in place without
+ * YAML anchors/aliases and merge keys are followed, so `uses: *ref` or `- *step` can't
+ * slip past. Positions are kept so findings can be annotated and fixed in place without
  * re-serializing (and reformatting) the user's YAML.
  */
 function findUses(file, text) {
     const lineCounter = new dist/* LineCounter */.HN();
     const doc = (0,dist/* parseDocument */.Tp)(text, { lineCounter, keepSourceTokens: false });
     const errors = doc.errors.map((e) => e.message);
-    const sites = [];
+    const sites = new Map();
     const root = doc.contents;
     if (!(0,dist/* isMap */.jh)(root))
-        return { sites, errors };
-    const collectSteps = (steps) => {
-        if (!(0,dist/* isSeq */.oP)(steps))
-            return;
-        for (const step of steps.items) {
-            if ((0,dist/* isMap */.jh)(step))
-                pushSite(getScalar(step, 'uses'));
-        }
+        return { sites: [], errors };
+    const lineOf = (offset) => lineCounter.linePos(offset).line;
+    /** Follows an alias, recording the alias's line: editing it changes what runs. */
+    const deref = (node, via) => {
+        if (!(0,dist/* isAlias */.Vj)(node))
+            return [node, via];
+        return [node.resolve(doc), node.range ? [...via, lineOf(node.range[0])] : via];
     };
-    const pushSite = (node) => {
-        if (!node || typeof node.value !== 'string' || !node.range)
+    const pushSite = (node, at, via, isAliasSite) => {
+        if (typeof node.value !== 'string')
             return;
-        const [valueStart, valueEnd] = node.range;
+        const [valueStart, valueEnd] = at;
         const lineStart = text.lastIndexOf('\n', valueStart - 1) + 1;
         let lineEnd = text.indexOf('\n', valueStart);
         if (lineEnd === -1)
@@ -43566,36 +43606,87 @@ function findUses(file, text) {
         const rest = text.slice(valueEnd, lineEnd).replace(/\r$/, '');
         const commentMatch = rest.match(/(?:^|\s)#\s*(.*?)\s*$/);
         const pos = lineCounter.linePos(valueStart);
-        sites.push({
+        const alsoAt = via.filter((l) => l !== pos.line);
+        const existing = sites.get(valueStart);
+        if (existing) {
+            existing.alsoAt = [...new Set([...(existing.alsoAt ?? []), ...alsoAt])];
+            return;
+        }
+        sites.set(valueStart, {
             file,
             line: pos.line,
             column: pos.col,
             value: node.value.trim(),
             valueStart,
             valueEnd,
-            quote: node.type === dist/* Scalar */.X5.QUOTE_DOUBLE ? '"' : node.type === dist/* Scalar */.X5.QUOTE_SINGLE ? "'" : '',
+            quote: isAliasSite
+                ? ''
+                : node.type === dist/* Scalar */.X5.QUOTE_DOUBLE
+                    ? '"'
+                    : node.type === dist/* Scalar */.X5.QUOTE_SINGLE
+                        ? "'"
+                        : '',
             comment: commentMatch ? commentMatch[1] : undefined,
             lineText,
             lineStart,
+            alsoAt: alsoAt.length ? alsoAt : undefined,
         });
     };
-    const jobs = root.get('jobs', true);
+    /** Looks up `key` in a map, following aliases and `<<:` merge keys. Returns the raw value node. */
+    const lookup = (mapNode, key, via, depth = 0) => {
+        const [map, mapVia] = deref(mapNode, via);
+        if (!(0,dist/* isMap */.jh)(map) || depth > 10)
+            return undefined;
+        const pair = map.items.find((p) => (0,dist/* isScalar */.jn)(p.key) && p.key.value === key);
+        if (pair)
+            return [pair.value, mapVia];
+        for (const merge of map.items.filter((p) => (0,dist/* isScalar */.jn)(p.key) && p.key.value === '<<')) {
+            for (const source of (0,dist/* isSeq */.oP)(merge.value) ? merge.value.items : [merge.value]) {
+                const hit = lookup(source, key, mapVia, depth + 1);
+                if (hit)
+                    return hit;
+            }
+        }
+        return undefined;
+    };
+    const collectUses = (mapNode, via) => {
+        const hit = lookup(mapNode, 'uses', via);
+        if (!hit)
+            return;
+        const [value, valueVia] = hit;
+        if ((0,dist/* isAlias */.Vj)(value)) {
+            // `uses: *ref`: report at the alias (that's the line to rewrite), but a change to
+            // the anchor's definition also changes what runs here.
+            const target = value.resolve(doc);
+            if ((0,dist/* isScalar */.jn)(target) && target.range && value.range) {
+                pushSite(target, [value.range[0], value.range[1]], [...valueVia, lineOf(target.range[0])], true);
+            }
+        }
+        else if ((0,dist/* isScalar */.jn)(value) && value.range) {
+            pushSite(value, [value.range[0], value.range[1]], valueVia, false);
+        }
+    };
+    const collectSteps = (mapNode, via) => {
+        const hit = lookup(mapNode, 'steps', via);
+        if (!hit)
+            return;
+        const [steps, stepsVia] = deref(...hit);
+        if (!(0,dist/* isSeq */.oP)(steps))
+            return;
+        for (const step of steps.items)
+            collectUses(step, stepsVia);
+    };
+    const [jobs, jobsVia] = deref(root.get('jobs', true), []);
     if ((0,dist/* isMap */.jh)(jobs)) {
         for (const pair of jobs.items) {
-            if (!(0,dist/* isMap */.jh)(pair.value))
-                continue;
-            pushSite(getScalar(pair.value, 'uses'));
-            collectSteps(pair.value.get('steps', true));
+            collectUses(pair.value, jobsVia);
+            collectSteps(pair.value, jobsVia);
         }
     }
-    const runs = root.get('runs', true);
-    if ((0,dist/* isMap */.jh)(runs))
-        collectSteps(runs.get('steps', true));
-    return { sites, errors };
-}
-function getScalar(map, key) {
-    const node = map.get(key, true);
-    return (0,dist/* isScalar */.jn)(node) ? node : undefined;
+    const runs = lookup(root, 'runs', []);
+    if (runs)
+        collectSteps(...runs);
+    return { sites: [...sites.values()].sort((a, b) => a.valueStart - b.valueStart), errors };
 }
 
 ;// CONCATENATED MODULE: ./src/cli.ts

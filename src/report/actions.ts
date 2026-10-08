@@ -68,7 +68,7 @@ export async function postReview(
   octokit: Octokit,
   target: PullTarget,
   findings: Finding[],
-): Promise<'posted' | 'nothing-new' | 'forbidden'> {
+): Promise<'posted' | 'nothing-new' | 'forbidden' | 'rejected'> {
   const byLine = new Map<string, Finding[]>()
   for (const f of findings) {
     const key = `${f.file}:${f.line}`
@@ -116,6 +116,7 @@ export async function postReview(
   } catch (err) {
     const status = (err as { status?: number }).status
     if (status === 403) return 'forbidden'
+    if (status === 422) return 'rejected'
     throw err
   }
 }
